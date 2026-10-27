@@ -41,6 +41,56 @@ against the whole point of the exercise. Those three entries are now in `.gitign
 
 ---
 
+## Outcome, 27 October 2026
+
+**The orphan-commit route is the one that worked.** `move .git _git-old` never succeeded, so
+steps 2 and 3 of the original route were never completed; everything below the heading
+*Alternative route: orphan commit* is the procedure that was actually executed.
+
+| | Before | After |
+|---|---|---|
+| `.git` total | 7,504 MB | **368 MB** |
+| `.git/objects` | ~2,870 MB of packs plus loose objects | 349 MB |
+| `.git/lfs` | 4,222 MB | **18 MB** |
+| GitHub LFS quota | ~1.5 GB | ~19 MB |
+| Tracked files | 618, incl. 479 `.fastq.gz` | 158, no FASTQ |
+| LFS objects | 1,768 | 19 |
+| History | 5 commits | `46e1692`, then `a8a8458` for this runbook |
+
+`Data/00-AAC-Sequences/CleanBactSeqs` still holds its 322 files and
+`_mistrimmed_superseded` its 44; no sequence data moved at any point.
+
+### What each cleanup command actually did
+
+* `git gc --prune=now` **works** on the object store - it took `.git/objects` from roughly
+  2.9 GB to 349 MB - but its final cleanup sweep enters an unbounded per-directory
+  *"Deletion of directory failed. should I try again (y/n)?"* loop. Answer `n` a few times to
+  confirm the pattern, then **Ctrl+C**. This is safe: gc writes the new pack before deleting
+  anything, so an interrupted prune leaves more objects than necessary, never fewer.
+* An interrupted gc leaves a stale `.git/gc.pid`. Delete it (`del .git\gc.pid`) or later gc
+  runs refuse with *gc is already running on machine …*.
+* **The remaining bulk was never git objects.** At 4,571 MB total, 4,222 MB of it was the
+  `.git/lfs` cache, which `git gc` does not touch. `git lfs prune` is the command that clears
+  it, and because it deletes *files* rather than directories it is not blocked by the
+  delete-child DENY ACE - it ran cleanly and reclaimed 4.2 GB in one pass. Run it before
+  concluding that the space cannot be recovered.
+
+### Two gotchas worth remembering
+
+* `git rm -r --cached .` fails on an orphan branch with *"files have staged content different
+  from both the file and the HEAD"*, listing any file edited since the last commit. Use
+  `git rm -r --cached -f .`. With `--cached`, `-f` cannot touch the working tree; it only
+  overrides a check that protects content existing solely in the index, and here the content
+  is in the working tree, which `git add -A` stages on the next line.
+* `git remote remove origin` deletes the tracking refs, then fails on the empty
+  `.git/refs/remotes/origin/` directory and prompts. Answering `n` lets it **finish removing
+  the config section**, so `git push` then fails with *'origin' does not appear to be a git
+  repository*. Inspecting `git remote -v` while that prompt is open is misleading - it still
+  shows the remote. Simply `git remote add origin <url>` again; the section is cleanly absent,
+  not half-written. The empty directory remains permanently and affects nothing.
+
+---
+
 ## What changes
 
 | | Before | After |
