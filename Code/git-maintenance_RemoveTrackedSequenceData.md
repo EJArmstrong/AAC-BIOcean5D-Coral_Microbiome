@@ -46,10 +46,10 @@ against the whole point of the exercise. Those three entries are now in `.gitign
 | | Before | After |
 |---|---|---|
 | `.git` total | 7.5 GB | ~0.15 GB |
-| `.git/lfs` | 4.2 GB, 1,768 objects | ~57 MB, 23 objects (19 MB / 20 with the trim) |
+| `.git/lfs` | 4.2 GB, 1,768 objects | **19 MB, 19 objects** |
 | Tracked files | 806 in the working tree, incl. 479 `.fastq.gz` | **170 files, 134 MB** (158 / 79 MB with the optional trim) |
 | Tracked FASTQ | 479 files, 949 MB | **none** - present on disk, ignored |
-| GitHub LFS quota | ~1.5 GB of sequence data | ~57 MB of `.rds` / `.RData` |
+| GitHub LFS quota | ~1.5 GB of sequence data | ~19 MB of `.rds` / `.RData` |
 | Commit history | 3+ commits | one initial commit |
 
 Verified by simulating the fresh repository with `git check-ignore --no-index` against the
@@ -282,7 +282,7 @@ git ls-files | findstr fastq.gz
 git lfs ls-files | find /c /v ""
 ```
 
-Expected **158**, nothing, **20**. Then retire the old branch and take its name:
+Expected **158**, nothing, **19**. Then retire the old branch and take its name:
 
 ```bat
 git branch -D main
@@ -334,8 +334,12 @@ git lfs ls-files | find /c /v ""
 git lfs ls-files | findstr fastq.gz
 ```
 
-Expected: **20** LFS files, all `.rds` / `.RData`, and
-nothing from the second command.
+Expected: **19** LFS files, all `.rds` / `.RData`, and nothing from the second command.
+
+(Not 20. `.gitattributes` routes `*RData`, a glob that matches files *ending* in `RData`;
+`Data/06-AAC-ITS2Symbionts/RData.xlsx` only contains the string and ends in `.xlsx`, so
+`git check-attr filter` reports `unspecified` and it is committed as an ordinary blob.
+Verified against `git lfs ls-files` on 27 October.)
 
 ## Step 6 - Delete the GitHub repository
 
@@ -363,7 +367,7 @@ git push -u origin main
 
 * The repository page should show one commit and no `Data/00-AAC-Sequences/CleanBactSeqs`.
 * **github.com -> Settings -> Billing and plans -> Storage -> Git LFS** should fall to
-  roughly 57 MB. Check this explicitly; do not assume.
+  roughly 19 MB. Check this explicitly; do not assume.
 
 ## Step 10 - Clean up locally and resume
 
@@ -385,7 +389,7 @@ untouched on disk and now ignored. Then resume OneDrive syncing.
 | Checkpoint | Command | Expected |
 |---|---|---|
 | Before the first commit | `git status --porcelain -uall \| find /c /v ""` | **158** |
-| After the commit | `git lfs ls-files \| find /c /v ""` | **20** |
+| After the commit | `git lfs ls-files \| find /c /v ""` | **19** |
 | At the end | `dir /b /s "Data\00-AAC-Sequences\CleanBactSeqs" \| find /c /v ""` | **322** |
 
 ## Shell equivalents
