@@ -1,0 +1,13 @@
+Check,Host,Statistic,P,Result
+"Dispersion Pre vs Post, clade-C UniFrac",POC,F = 8.19,0.005,dispersion x1.75
+"Dispersion Pre vs Post, Bray-Curtis post-MED",POC,F = 8.61,0.003,dispersion x1.74
+"Same, permutations blocked by colony",POC,F = 8.19,0.003,unchanged
+"Same, spatial-median centroid (outlier-robust)",POC,F = 8.19,0.005,ratio 1.75 unchanged
+"Paired Wilcoxon, colony x destination (n=20)",POC,V = 31,0.0042,16/20 pairs increase
+Median (not mean) dispersion ratio,POC,2.30,,not outlier-driven; 2/20 Post exceed Pre max
+Read depth Pre vs Post (confound),POC,"median 48,336 -> 39,213",0.0167,Post depth LOWER
+Depth vs distance-to-centroid (confound),POC,Spearman rho = -0.106,0.515,no association
+Sequences detected Pre vs Post (confound),POC,median 29.5 vs 30.5,0.3847,unchanged
+PERMANOVA mean-community shift (UniFrac),POC,"R2 = 0.017, F = 0.70",0.568,no mean shift - variance only
+"Dispersion Pre vs Post, clade-C UniFrac",POR,F = 0.58,0.482,no increase (ratio 1.24)
+"Bacterial 16S dispersion, Pre vs Post",POC,F = 1.33,0.267,no increase in the bacteriome

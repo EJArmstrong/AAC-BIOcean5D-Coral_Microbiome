@@ -1,0 +1,355 @@
+---
+title: "Project AAC - BIOcean5D Coral Microbiomes: 02 - Data Pre-Processing"
+author: "Eric J. Armstrong, eja98@cornell.edu, @EricJ_Armstrong"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: show
+    highlight: default
+    keep_md: true
+    theme: journal
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+      toc_depth: 3
+  pdf_document:
+    toc: true
+editor_options:
+  chunk_output_type: console
+---
+
+```{r 0-setup, include=FALSE}
+
+# Define knitr options
+knitr::opts_chunk$set(
+  collapse = TRUE, 
+  echo=TRUE,
+  comment="#>", 
+  message=FALSE,
+  warning=FALSE,
+	fig.align="center",
+  fig.width=7,
+  fig.height=5,
+  dpi=300)
+
+knitr::opts_knit$set(root.dir = "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/")
+
+# What time did we start running this script? 
+start_time <- Sys.time()
+```
+
+#### Purpose of this file  
+
+This file contains all of the code for producing a curated OTU table from the 16S microbial sequence data for the Armstrong et al. manuscript entitled **"XXX"**, published by [XXX](https://doi.org/10.1093/femsec/fiaa02-AAC-9).
+
+Here, we will process the data into a phyloseq object.
+
+    ASV table
+    Taxonomy Table
+    Track Reads (metadata)
+
+Then, we will remove the following:
+
+    Remove Chloroplasts
+    Remove Mitochondria.
+    Removing ASVs from negative controls and also negative control samples.
+    Evaluate accuracy by looking at the Mock Community.
+    Remove samples without “enough” reads.
+
+Finally, write data file of phyloseq output, which will be stored in Data/02-AAC--PreProcessing/phyloseq_raw_prepro.RData.
+
+##### If you have any questions, you are welcome to email the corresponding author at eja98@cornell.edu or tweet him at [EricJ_Armstrong](https://x.com/EricJ_Armstrong).
+
+Useful links:
+https://r-from-a-learners-perspective.readthedocs.io/en/latest/part5/
+
+# 1 - Prepare Workspace
+Load necessary R packages and set default parameters
+
+## 1.1 - Define Paths
+```{r 1.1-define_paths}
+# a - Define the main project directory ----
+  dir_proj <- 
+  "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/"
+
+# b - Define the directory containing the input data ----
+  dir_in <- 
+  "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/Data/"
+    
+# c - Define the directories that will contain output Files/Figures/Tables ----
+  dir_out_dat <- paste(dir_in,
+                       "02-AAC-PreProcessing/", sep = "")
+  dir.create(dir_out_dat, recursive = TRUE)
+  dir_out_fig <- paste(dir_proj,
+                       "Figures/02-AAC-PreProcessing/", sep = "")
+  dir.create(dir_out_fig, recursive = TRUE)
+  dir_out_tab <- paste(dir_proj,
+                       "Tables/02-AAC-PreProcessing/", sep = "")
+  dir.create(dir_out_tab, recursive = TRUE)
+    
+```
+
+## 1.2 - Set Defaults
+```{r 1.2-set_defaults}
+# a - Define the output prefix for generated files ----
+  pref_out <- "02-AAC-PreProcessing_"
+    
+# b - Set the random seed value ----
+  set.seed(123)
+
+```
+
+## 1.3 - Load Libraries
+```{r 1.3-load-lib}
+# a - load necessary packages ----
+  pacman::p_load(devtools, phyloseq, dada2, patchwork, xlsx, BiMiCo,
+                 Biostrings, tidyverse, ggpubr, rstatix, ggplot2, expss,
+                 install = FALSE)
+
+```
+
+
+# 2 - Import Data
+Load the necessary input data
+
+## 2.1 - Load Phyloseq Data
+```{r 2-load-data}
+# a - First, load the phyloseq object ----
+  load(paste(dir_in,
+             "01-AAC-AssignSeqVariants/",
+             "01-AAC-AssignSeqVariants_physeq_raw.RData",
+             sep = ""))
+
+# b - Ceate a sample metadata table --------
+  # Load the sample metadata table
+  metadata <- read.xlsx(file = paste(dir_in,
+                                     "01-AAC-AssignSeqVariants/",
+                                     "Master_SampleKey.xlsx", sep = ""),
+                        sheetName = "RData")
+
+  # Extract the sample names from the physeq object to match to metadata
+  sample.names <- colnames(otu_table(physeq_raw))
+  
+  # Reorganize the metadata table with the relevant data for the analysis
+  samdf <- data.frame("Group" = vlookup(lookup_value = sample.names,
+                                       dict = metadata,
+                                       lookup_column = "FileName",
+                                       result_column = "Group"),
+                      "Site" = vlookup(lookup_value = sample.names,
+                                       dict = metadata,
+                                       lookup_column = "FileName",
+                                       result_column = "Site"),
+                      "Type" = vlookup(lookup_value = sample.names,
+                                       dict = metadata,
+                                       lookup_column = "FileName",
+                                       result_column = "Type"),
+                      "Subtype" = vlookup(lookup_value = sample.names,
+                                       dict = metadata,
+                                       lookup_column = "FileName",
+                                       result_column = "Subtype"),
+                      "Transplant" = vlookup(lookup_value = sample.names,
+                                       dict = metadata,
+                                       lookup_column = "FileName",
+                                       result_column = "Transplant"),
+                      "Treatment" = vlookup(lookup_value = sample.names,
+                                       dict = metadata,
+                                       lookup_column = "FileName",
+                                       result_column = "Treatment"),
+                      "Colony" = vlookup(lookup_value = sample.names,
+                                       dict = metadata,
+                                       lookup_column = "FileName",
+                                       result_column = "Colony"),
+                      "Host" = vlookup(lookup_value = sample.names,
+                                       dict = metadata,
+                                       lookup_column = "FileName",
+                                       result_column = "Species"))
+  									 
+  head(samdf)
+  row.names(samdf) <- sample.names
+
+# d - Append the sample metadata to the Phyloseq object ----
+  sample_data(physeq_raw) <- samdf
+  
+  # Turn the 'treatment' column into a character vector and reorder
+  sample_data(physeq_raw)$Treatment <-
+    as.character(sample_data(physeq_raw)$Treatment)
+  
+  sample_data(physeq_raw)$Treatment <- 
+    factor(sample_data(physeq_raw)$Treatment,
+           levels=c("Genotype", "2-Weeks",
+                    "4-Months", "Pre-HS", "Post-HS", NA))
+  
+  # Add a column with the SampleID names to the Phyloseq object
+  sample_data(physeq_raw)['SampleID'] <- row.names(sample_data(physeq_raw)) 
+
+```
+
+# 3 - Data Cleanup
+## 3.1 - Remove Organelle Sequences
+```{r 3.1-remove_organelles}
+# a - Remove Chloroplast Sequences ----
+
+  # Make a new physeq without chloroplasts
+    physeq_noChloros <-
+      physeq_raw %>%
+      # rm chloroplasts
+      subset_taxa(Order != "Chloroplast" | is.na(Order))
+  
+  # How many taxa were chloroplasts? 
+    num_chloro_ASVs <- ntaxa(physeq_raw) - ntaxa(physeq_noChloros)
+    num_chloro_ASVs
+    
+# b - Remove Mitochondrial Sequences ---- 
+    
+  # Make a new physeq without chloroplasts
+    physeq_noChlorosMitos <- 
+      physeq_noChloros %>%
+      subset_taxa(Family != "Mitochondria" | is.na(Family))
+    
+    # How many mitochondrial ASVs? 
+      num_mito_ASVs <- ntaxa(physeq_noChloros) - ntaxa(physeq_noChlorosMitos)
+      num_mito_ASVs
+ 
+# c - Total number of ASVs removed from chloros and mitos 
+  ntaxa(physeq_raw) - ntaxa(physeq_noChlorosMitos)
+  
+# d - Proportion of ASVs kept? 
+  ntaxa(physeq_noChlorosMitos)/ntaxa(physeq_raw)
+  
+```
+
+## 3.2 - Evaulate & Remove Controls
+Take a look at the negative controls and then make a decision about whether or not to remove the ASVs that were found in them
+
+    Negative controls
+    ASVs found within the negative controls and their distribution in the samples.
+    Evaluate the mock community
+
+```{r 3.2-remove_controls}
+# a - Create a vector of samples that were negative controls --
+  samples_control <- 
+  rownames(subset(sample_data(physeq_raw), 
+                   Subtype %in% 
+                     c("PCR Blank", "Extraction Blank", "Field Blank")))
+
+# b - Make a new phyloseq object of only the control samples ----
+  physeq_control <- 
+    physeq_noChlorosMitos %>%
+    prune_samples(
+      (sample_names(physeq_noChlorosMitos) %in% samples_control), .) %>%
+    #subset_samples(., names %in% samples_control) %>%
+    # force remove ASVs with 0 counts 
+    prune_taxa(taxa_sums(.) > 0, .)
+
+  physeq_control
+  
+# c - Vector of control ASVs ----
+  ASVs_control <- 
+    physeq_control %>%
+    tax_table() %>%
+    data.frame() %>%
+    # rownames_to_column(var = "ASV") %>%
+    dplyr::select(ASV) %>%
+    as.vector()
+
+# d - Visualize raw abundance values of control ASVs ----
+  # physeq_control %>%
+  #   plot_bar(., "ASV", fill = "ASV")
+  plot_bar(physeq_control, "ASV", fill = "ASV") +
+    theme(legend.position = "none")
+  
+# e - Use vector to subset from larger dataset ---- 
+  physeq_neg_controlASV <- 
+    physeq_noChlorosMitos %>%
+    subset_taxa(., ASV %in% ASVs_control$ASV) %>%
+    # we will also need to remove the positive controls from the samples! 
+    # We will evaluate the Mock community a bit later on. :) 
+    subset_samples(., Subtype != "ZymoMock")
+  
+  physeq_neg_controlASV
+  
+# f - Plot Abundances of neg control ASVs in samples versus controls ----
+  plot_bar(physeq_neg_controlASV, "ASV", facet_grid = Group~.) +
+    theme(legend.position = "none")
+  
+# g - Calculate the phylum relative abundance 
+  # Note: The read depth MUST be normalized in some way: scale_reads
+  asv_negControls_df <- 
+    physeq_neg_controlASV %>%
+    # agglomerate at the ASV level 
+    tax_glom(taxrank = "ASV") %>% 
+    # Melt to a long format 
+    psmelt()
+  
+  # Set levels of Group variable so that "Control" comes first
+  asv_negControls_df$Group <- factor(asv_negControls_df$Group, 
+                                     levels = c("Control", "TrueSample"))
+  
+  # Check
+  head(asv_negControls_df)
+  
+# h - Statistically test! 
+  library(rstatix)
+  negControl_ASV_statTest <- 
+    asv_negControls_df %>%
+    group_by(ASV) %>%
+    wilcox_test(Abundance ~ Group) %>%
+    # Add the x and y positions for plotting 
+    adjust_pvalue(method = "fdr") %>%
+    # Make the significance values be stars for plotting
+    add_significance() %>%
+    # Calculate where to place it on the facet grid plot
+    add_xy_position(x = "Group", fun = "max", scales = "free") %>%
+    # bring the pvalues a lil lower
+    mutate(y.position = y.position * 0.82)
+  
+  ## Using ggpubr 
+  ggboxplot(
+    asv_negControls_df, 
+    x = "Group", y = "Abundance", 
+    color = "Group",
+    facet.by = "ASV", scales = "free_y",add = "jitter") + 
+    stat_pvalue_manual(negControl_ASV_statTest) + 
+    scale_color_manual(values = c("firebrick3", "cornflowerblue")) + 
+    scale_fill_manual(values = c("firebrick3", "cornflowerblue")) + 
+    theme_bw() + 
+    theme(axis.text.x = element_blank(), axis.title.x = element_blank(),
+          legend.title = element_blank(), legend.position = c(0.85, 0.07))
+  
+# i - Remove Control Taxa & Make my new phloseq object ---- 
+
+  physeq_noControlsChlorosMitos <- 
+    physeq_noChlorosMitos %>%
+    # Actually remove the control ASVs (except 18, 56)
+    subset_taxa(., !(ASV %in% ASVs_control))  %>%
+    # Remove control samples 
+    subset_samples(., !(Subtype %in% 
+                          c("PCR Blank", "Extraction Blank", "Field Blank")))
+
+  
+# j - save processed physeq object ----
+  save(physeq_noControlsChlorosMitos,
+         file = paste(dir_out_dat,
+                      pref_out,
+                      "physeq_noControlsChlorosMitos.RData", sep = ""))
+```
+
+# Final info for Reproducibility
+Check Render Time
+```{r render-time}
+# Take the time now that we are at the end of the script
+end_time <- Sys.time()
+end_time 
+
+# Echo the elapsed time
+elapsed_time <- round((end_time - start_time), 3)
+elapsed_time
+```
+
+# Session Information
+```{r session-info}
+# Ensure reproducibility with package version information
+devtools::session_info()
+```
+

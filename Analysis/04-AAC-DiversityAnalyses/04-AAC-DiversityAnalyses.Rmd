@@ -1,0 +1,636 @@
+---
+title: "Project AAC - BIOcean5D Coral Microbiomes: 02 - Data Pre-Processing"
+author: "Eric J. Armstrong, eja98@cornell.edu, @EricJ_Armstrong"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  html_document:
+    code_folding: show
+    highlight: default
+    keep_md: true
+    theme: journal
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+      toc_depth: 3
+  pdf_document:
+    toc: true
+editor_options:
+  chunk_output_type: console
+---
+
+```{r 0-setup, include=FALSE}
+
+# Define knitr options
+knitr::opts_chunk$set(
+  collapse = TRUE, 
+  echo=TRUE,
+  comment="#>", 
+  message=FALSE,
+  warning=FALSE,
+	fig.align="center",
+  fig.width=7,
+  fig.height=5,
+  dpi=300)
+
+knitr::opts_knit$set(root.dir = "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/")
+
+# What time did we start running this script? 
+start_time <- Sys.time()
+```
+
+#### Purpose of this file  
+
+This file contains all of the code for producing a curated OTU table from the 16S microbial sequence data for the Armstrong et al. manuscript entitled **"XXX"**, published by [XXX](https://doi.org/10.1093/femsec/fiaa02-AAC-9).
+
+# 1 - Prepare Workspace
+Load necessary R packages and set default parameters
+
+## 1.1 - Define Paths
+```{r 1.1-define_paths}
+# a - Define the main project directory ----
+  dir_proj <- 
+  "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/"
+
+# b - Define the directory containing the input data ----
+  dir_in <- 
+  "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/Data/"
+    
+# c - Define the directories that will contain output Files/Figures/Tables ----
+  dir_out_dat <- paste(dir_in,
+                       "04-AAC-DiversityAnalyses/", sep = "")
+  dir.create(dir_out_dat, recursive = TRUE)
+  dir_out_fig <- paste(dir_proj,
+                       "Figures/04-AAC-DiversityAnalyses/", sep = "")
+  dir.create(dir_out_fig, recursive = TRUE)
+  dir_out_tab <- paste(dir_proj,
+                       "Tables/04-AAC-DiversityAnalyses/", sep = "")
+  dir.create(dir_out_tab, recursive = TRUE)
+    
+```
+
+## 1.2 - Set Defaults
+```{r 1.2-set_defaults}
+# a - Define the output prefix for generated files ----
+  pref_out <- "04-AAC-DiversityAnalyses_"
+    
+# b - Set the random seed value ----
+  set.seed(123)
+
+```
+
+## 1.3 - Load Libraries
+```{r 1.3-load-lib}
+# a - load necessary packages ----
+  pacman::p_load(tidyverse, patchwork, iNEXT, phyloseq, expss, ggplot2,
+               install = FALSE)
+
+```
+
+# 2 - Import Data
+Load the necessary input data
+
+## 2.1 - Load Phyloseq Data
+```{r 2-load-data}
+# a - First, load the phyloseq object ----
+  load(paste(dir_in,
+             "02-AAC-PreProcessing/",
+             "02-AAC-PreProcessing_physeq_noControlsChlorosMitos.RData",
+             sep = ""))
+
+# b - Add metadata columns with full treatment and individual IDs ----
+  sample_data(physeq_noControlsChlorosMitos)$FullTreatment <- paste(
+    sample_data(physeq_noControlsChlorosMitos)$Site,
+    sample_data(physeq_noControlsChlorosMitos)$Subtype,
+    sample_data(physeq_noControlsChlorosMitos)$Transplant,
+    sample_data(physeq_noControlsChlorosMitos)$Treatment,
+    sep = " "
+  )
+
+  sample_data(physeq_noControlsChlorosMitos)$Individual <- paste(
+    sample_data(physeq_noControlsChlorosMitos)$Species,
+    sample_data(physeq_noControlsChlorosMitos)$Colony,
+    sep = " "
+  )
+  
+```
+
+# 3 - Calculate Biodiversity with Hill Numbers 
+```{r calc-biodiv}
+# Prepare input data 
+## species = rows; samples = columns
+iNEXT_input_df <- 
+  physeq_noControlsChlorosMitos %>%
+  otu_table() %>%
+  data.frame()
+
+# inspect
+dim(iNEXT_input_df)
+iNEXT_input_df[1:5, 1:3]
+
+# Run iNEXT
+# Note: this requires multithreading as it takes a VERY long time ...
+# iNEXT_data <-
+#  iNEXT(iNEXT_input_df, q = c(0, 1, 2), datatype = "abundance")
+
+load(file = paste(dir_out_dat,
+                  pref_out,
+                  "iNEXT_data.RData", sep = ""))
+# Inspect Data 
+str(iNEXT_data)
+```
+
+# 4 - Plot Rarefaction Curves
+
+## 4.1 - Prepare Metadata
+```{r prep-metadata}
+# Make a metadata object
+metadata_df <- 
+  physeq_noControlsChlorosMitos %>%
+  sample_data() %>%
+  data.frame()
+# take a look
+glimpse(metadata_df)
+
+# Create Color dataframe for plotting 
+color_df <- 
+  iNEXT_input_df %>%
+  colnames() %>%
+  data.frame()
+glimpse(color_df)
+
+# Add a names column 
+colnames(color_df)[1] <- "SampleID"
+color_df <- 
+  color_df %>%
+  # fix sample names 
+  mutate(SampleID = gsub(SampleID, pattern = "[.]", replace = "-"),
+         SampleID = gsub(SampleID, pattern = "X", replace = ""))
+head(color_df)
+
+# Manual define colors
+colors_subtype <- data.frame(
+  "Subtype" = unique(sample_data(physeq_noControlsChlorosMitos)$Subtype),
+  "Subtype_Color" = c("tomato2",
+                      "tomato4",
+                      "turquoise",
+                      "turquoise4",
+                      "goldenrod4")
+  )
+
+iNEXT_color_df <- 
+  color_df %>%
+  # # fix sample names 
+  # mutate(names = gsub(names, pattern = "[.]", replace = "-"),
+  #        names = gsub(names, pattern = "X", replace = ""))  %>%
+  # Merge with metadata 
+  left_join(metadata_df, by = "SampleID")
+
+iNEXT_color_df$Subtype_Color <-
+  vlookup(lookup_value = iNEXT_color_df$Subtype,
+          dict = colors_subtype,
+          lookup_column = "Subtype",
+           result_column = "Subtype_Color")
+```
+
+## 4.2 - Plot the Rarefaction Curves
+```{r plot-rarefaction}
+plot_rarefaction_iNEXT <- ggiNEXT(iNEXT_data, type = 1, facet.var = "Order.q") + 
+  # scale_color_manual(values = iNEXT_color_df$salinity_colors) +
+  # scale_fill_manual(values = iNEXT_color_df$salinity_colors) + 
+  theme_bw() + 
+  theme(legend.position = "none") + 
+  labs(y = "Effective Number of ASVs",
+       x = "Number of Sequences")
+
+print(plot_rarefaction_iNEXT)
+
+# PATCH 2026-10-26: write the figure to Figures/04-AAC-DiversityAnalyses/
+ggsave(paste0(dir_out_fig, pref_out, "plot_RarefactionCurves.png"),
+       plot = plot_rarefaction_iNEXT, width = 9, height = 4, dpi = 300, bg = "white")
+ggsave(paste0(dir_out_fig, pref_out, "plot_RarefactionCurves.pdf"),
+       plot = plot_rarefaction_iNEXT, width = 9, height = 4, bg = "white")
+```
+
+Remembering that an Order q of:  
+
+  - 0 = Richness/ Number of Total taxa
+  - 1 = Exponential Shannon / Number of "Common" taxa
+  - 2 = Inverse Simpson / Number of "Dominant" taxa 
+  
+*Also note that iNEXT will extrapolate the number of sequences to double the sequencing depth of the sample!*
+
+Finally, let's draw some conclusions from the plot above (we discussed in class & I'll summarize here):  
+
+1. The best gift of a the Hill Numbers: *All three diversity measures are on the same x-axis: The Effective Number of Species or ASVs.*  
+2. The y-axis values go down as we weight abundance from `q = 0, 1, 2`. As q increases from 0 to 1 to 2, the abundance of the species is weighted more, so the rarefaction curve plateaus earlier. **This is important because it indicates that richess is the most sensitive to sequencing depth!**
+3. Most of the sample rarefaction curves appear to plateau but we need to look deeper.  
+4. There appears to be a sample with much lower richness than the rest of the dataset. Let's keep our eyes on this sample...  
+
+Ok, this plot is nice, but since it's autogenerated with the `ggiNEXT` function, I'd like some more freedom to plot. Let's manually plot the data that we pull out from the iNEXT data.
+
+# 5 - Manually plot Diversity 
+
+## 5.1 - Rarefaction
+```{r iNEXT-manual, fig.width=6, fig.height=6}
+iNEXT_manual_df <- 
+  iNEXT_data$iNextEst$size_based %>%
+  dplyr::rename(SampleID = Assemblage) %>%
+  # Fix the samples names 
+  mutate(SampleID = gsub(SampleID, pattern = "[.]", replace = "-"),
+         SampleID = gsub(SampleID, pattern = "X", replace = "")) %>%
+  # join with metadata 
+  left_join(., metadata_df, by = "SampleID")
+
+# Inspect 
+dim(iNEXT_manual_df)
+str(iNEXT_manual_df)
+
+# Plot it - Rarefaction Curve 
+iNEXT_manual_df %>%
+  # Filter out rows that are calcaulted by rarefaction from iNEXT
+  dplyr::filter(Method == "Rarefaction") %>%
+  # Now, let's draw the plot, be sure to group by the samples if using geom_line!
+  ggplot(aes(x = m, y= qD, color = Subtype, group = SampleID)) + 
+  geom_line() + 
+  # Facet with the station to see the samples better 
+  facet_grid(Order.q~Subtype, scales = "free") + 
+  # scale_color_manual(values = Subtype_Color) + 
+  labs(x = "Number of Sequences (Library Size)", 
+       y = "Effective Number of ASVs") + 
+  theme_bw() + 
+  #guides(color = guide_legend(nrow = 2, byrow = TRUE)) + 
+  theme(legend.position = "bottom",
+        axis.text.x = element_text(angle = 30, vjust = 1, hjust = 1),
+        legend.title = element_blank()) 
+```
+
+
+While the rarefaction curves from `ggiNEXT` agglomerated the data together, it was hard to see individual samples. Above, we can start to tease apart specific samples within each station that appear higher. 
+
+**Some initial take-aways:**  
+
+- *Richness:*  
+    - There appears to be a difference between the biomes in the total richness.
+    - There are potential outlier samples in some of the biomes.  
+- *Simpson's Diversity:* 
+    - The **Seawater 3-um biome** has a bimodal distribution with (2) samples that tend to have more dominant taxa/higher diversity with 370 - 400 dominant species versus (2) samples that have lower diversity around ~150 dominant taxa).
+    - **Seawater 0.2-um biome** appears to have the lowest Simpson's diversity as the plateau is mostly all below ~50 dominant taxa.  
+    - There is one sample in the **Seawater 3-um biome** that has a much larger Simpson Diversity value compared to other samples. I wonder who those are! 
+- *Shannon Diversity:*
+    - Here, the trends that were starting to be witnessed in the Shannon diversity are much more amplified!
+    
+However, all of these changes are qualitative... let's actually quantify by running some stats!
+
+# 6 - Boxplots of Diversity 
+
+Now, let's zoom in on a bit of a better view of the data by visualizing it in a boxplot...  
+
+```{r div-dfs}
+# # More easily readable treatment labels 
+# treatment_names <- c("Pocillopora\Back Transplant",
+#                    "Pocillopora\Out Transplant",
+#                    "Porites\Back Transplant",
+#                    "Porites\Out Transplant")
+# 
+# names(treatment_names) <- c("Copano West", "Copano East","Mesquite Bay",
+#                           "Aransas Bay", "Shipping Channel")
+
+# Make a dataframe
+obs_div_df <- 
+  iNEXT_manual_df %>%
+  dplyr::filter(Method == "Observed")
+
+# Check it 
+head(obs_div_df)
+```
+
+
+```{r div-boxplot, fig.height = 3.5, fig.width = 9}
+# Reorder the FullTreatment variable so that it is easier to interpret
+obs_div_df$FullTreatment <- 
+  factor(obs_div_df$FullTreatment, 
+         levels = 
+           c("Opunohu Coral POC Genotype Genotype",
+             "Opunohu Coral POC Genotype2 Genotype",
+             "Opunohu Coral POC Back Transplant 4-Months",
+             "Opunohu Coral POC Out Transplant 4-Months",
+             "Opunohu Coral POC Back Transplant Pre-HS",
+             "Opunohu Coral POC Out Transplant Pre-HS",
+             "Opunohu Coral POC Back Transplant Post-HS",
+             "Opunohu Coral POC Out Transplant Post-HS",
+             "Opunohu Coral POR Genotype Genotype",
+             "Opunohu Coral POR Back Transplant 2-Weeks",
+             "Opunohu Coral POR Out Transplant 2-Weeks",
+             "Opunohu Coral POR Back Transplant 4-Months",
+             "Opunohu Coral POR Back Transplant Pre-HS",
+             "Opunohu Coral POR Back Transplant Post-HS",
+             "Opunohu Seawater 0.2-micron NA NA",
+             "Opunohu Seawater 3-micron NA NA",
+             "Opunohu Sediment NA NA",
+             "Tiahura Coral POC Genotype Genotype",
+             "Tiahura Coral POC Genotype2 Genotype",
+             "Tiahura Coral POC Back Transplant 4-Months",
+             "Tiahura Coral POC Out Transplant 4-Months",
+             "Tiahura Coral POC Back Transplant Pre-HS",
+             "Tiahura Coral POC Out Transplant Pre-HS",
+             "Tiahura Coral POC Back Transplant Post-HS",
+             "Tiahura Coral POC Out Transplant Post-HS",
+             "Tiahura Coral POR Genotype Genotype",
+             "Tiahura Coral POR Back Transplant 2-Weeks",
+             "Tiahura Coral POR Out Transplant 2-Weeks",
+             "Tiahura Coral POR Out Transplant 4-Months",
+             "Tiahura Coral POR Out Transplant Pre-HS",
+             "Tiahura Coral POR Out Transplant Post-HS" ,
+             "Tiahura Seawater 0.2-micron NA NA",
+             "Tiahura Seawater 3-micron NA NA",
+             "Tiahura Sediment NA NA"))
+
+
+# Boxplots by site
+# obs_div_df %>%
+#   ggplot(aes(x = Subtype, y = qD, fill = Subtype, color = Subtype)) + 
+#   facet_wrap(.~Order.q, scales = "free") + 
+#   geom_jitter(size = 2.5) + 
+#   geom_boxplot(alpha = 0.5, outlier.shape = NA) + 
+#   # scale_color_manual(values = station_colors) + 
+#   # scale_fill_manual(values = station_colors) + 
+#   labs(y = "Effective Number of ASVs") + 
+#   theme_bw() +
+#   theme(legend.position = "bottom",
+#         axis.title.x = element_blank(),
+#         legend.title = element_blank())
+
+plot_Hill_POC <- 
+  obs_div_df %>%
+  subset(., Host %in% c("POC")
+         # & ! Transplant %in% c("Genotype2")
+         ) %>%
+  ggplot(aes(x = FullTreatment, y = qD, 
+             fill = FullTreatment, color = FullTreatment)) + 
+  facet_wrap(.~Order.q, scales = "free") + 
+  geom_jitter(size = 2.5) + 
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) + 
+  # scale_color_manual(values = station_colors) + 
+  # scale_fill_manual(values = station_colors) + 
+  labs(y = "Effective Number of ASVs") + 
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.title.x = element_blank(),
+        legend.title = element_blank())
+
+plot_Hill_POR <- 
+  obs_div_df %>%
+  subset(., Host %in% c("POR")
+         # & ! Transplant %in% c("Genotype2")
+         ) %>%
+  ggplot(aes(x = FullTreatment, y = qD, 
+             fill = FullTreatment, color = FullTreatment)) + 
+  facet_wrap(.~Order.q, scales = "free") + 
+  geom_jitter(size = 2.5) + 
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) + 
+  # scale_color_manual(values = station_colors) + 
+  # scale_fill_manual(values = station_colors) + 
+  labs(y = "Effective Number of ASVs") + 
+  theme_bw() +
+  theme(legend.position = "bottom",
+        axis.title.x = element_blank(),
+        legend.title = element_blank())
+
+# Combine the two plots and save
+plot_Hill_Both <- plot_Hill_POC / plot_Hill_POR
+
+    # Save the plot in PNG format
+  ggsave(paste0(dir_out_fig, pref_out,
+                "plot_Hill_Both.png", 
+                sep = ""), 
+         plot = plot_Hill_Both, 
+         width = 15, height = 10, dpi = 300)
+  
+  # Save the plot in PDF format
+  ggsave(paste0(dir_out_fig, pref_out,
+                "plot_Hill_Both.pdf", 
+                sep = ""), 
+         plot = plot_Hill_Both, 
+         width = 15, height = 10)
+```
+
+We can draw that:  
+
+- Richness doesn't appear to be different between the stations, however, we might need to run a statistical test to check!  
+- **Mesquite Bay** appears to have the lowest Shannon and Simpson diversity, indicating that it has fewer common/dominant taxa compared to other communities.  
+- **Copano West** seems to have the highest Shannon and Simpson Diversity *and* the highest amount of variation. Though, we'd also need to follow this up with a test!  
+
+## Richness - Statistical Testing
+
+```{r richness-stats}
+# Make a richness data frame
+df_richness_POC_Opu <- 
+  obs_div_df %>%
+  subset(., Host %in% c("POC")
+         & ! Transplant %in% c("Genotype2")
+         & Site %in% ("Opunohu")) %>%
+  dplyr::filter(Method == "Observed") %>%
+  dplyr::filter(Order.q == 0)
+
+# Add the statistical test! 
+kruskal.test(qD ~ station_names, data = richness_df)
+
+library(ordinal)
+library(emmeans)
+
+# 1. Fit your Cumulative Link Mixed Model (as done previously)
+fit_clmm <- clmm(factor(qD) ~ FullTreatment + (1 | Individual), data = df_richness_POC_Opu)
+
+# 2. Obtain estimated marginal means on the latent/log-odds scale
+clmm_emmeans <- emmeans(fit_clmm, ~ FullTreatment)
+
+# 3. Perform pairwise post-hoc tests (using Holm adjustment for multiple tests)
+clmm_pairs <- pairs(clmm_emmeans, adjust = "holm")
+
+# View the contrast results (Z-tests and adjusted p-values)
+print(clmm_pairs)
+
+# 4. Transform results to Odds Ratios (highly recommended for interpretation)
+# This shows the relative odds of scoring higher vs. lower between time points
+summary(clmm_pairs, type = "response")
+
+# friedman.test(qD ~ FullTreatment | Individual, data = df_richness_POC_Opu)
+# 
+# library(ARTool)
+# library(lme4)
+# 
+# # Fit the aligned rank transform model
+# m <- art(qD ~ factor(FullTreatment) + (1 | Individual), data = richness_df)
+# 
+# # Run ANOVA on the transformed data
+# anova(m)
+# 
+# # 1. Post-hoc for a specific main effect (e.g., 'time')
+# art.con(m, "FullTreatment", adjust = "holm")
+# 
+# # 2. Post-hoc for an interaction effect (e.g., 'treatment' across 'time')
+# art.con(m, ~ treatment * time, adjust = "holm")
+
+# 
+my_comparisons <- list( c("Copano\nWest", "Copano\nEast"), c("Copano\nWest", "Mesquite\nBay"), 
+                        c("Copano\nWest", "Aransas\nBay"), c("Copano\nWest", "Shipping\nChannel"),
+                        c("Copano\nEast", "Mesquite\nBay"), c("Copano\nEast", "Aransas\nBay"),
+                        c("Copano\nEast", "Shipping\nChannel"), c("Mesquite\nBay", "Aransas\nBay"),
+                        c("Mesquite\nBay", "Shipping\nChannel"), c("Aransas\nBay", "Shipping\nChannel"))
+
+# Now, plot it!
+richness_df %>%
+  ggplot(aes(x = station_names, y = qD, fill = station, color = station)) + 
+  geom_jitter(size = 2.5) + 
+  geom_boxplot(alpha = 0.5, outlier.shape = NA) + 
+  scale_color_manual(values = station_colors) + 
+  scale_fill_manual(values = station_colors) + 
+  labs(y = "Effective Number of ASVs") + 
+  # Add pairwise comparisons p-value
+  stat_compare_means(comparisons = my_comparisons,
+                     tip.length = 0, hide.ns = TRUE) + 
+  stat_compare_means(label.y = 50)  +   # Add global p-value
+  theme_bw() +
+  theme(legend.position = "none",
+        axis.title.x = element_blank(),
+        legend.title = element_blank())
+```
+
+
+<!-- NOTE 2026-10-26: the four chunks below are residue from an unrelated tutorial. They
+reference salinity_psu, station, station_colors and water_tempC:DO_mgL, none of which exist in
+this project metadata (there is no salinity gradient in a two-bay coral transplant), so they
+error on knit. Disabled with eval=FALSE, include=FALSE pending review/removal. -->
+# Environmental Variable Check 
+
+```{r environmental-pairs, fig.width=8, fig.height=8, eval=FALSE, include=FALSE}
+# Check out metadata
+head(metadata_df)
+
+# Pull out environmental variables 
+env_df <- 
+  metadata_df %>%
+  dplyr::select(names, water_tempC:DO_mgL)
+
+# Inspect
+head(env_df)
+
+# plot the correlations
+pairs(dplyr::select(env_df, -names), upper.panel = NULL) 
+```
+
+# Diversity vs Salinity 
+
+## Salinity - what is it? 
+
+PSU  = practical salinity unit 
+
+- 1 PSU = 1 g of salt per 1,000 grams of water
+- 1 PSU = 1 ppt (part per thousand)
+
+The gradient is: 
+
+- Freshwater = 0-0.5
+- Brackish = 0.5 - 30
+- Marine = >30
+
+```{r div-vs-salinity, fig.height=3.5, fig.width=6, eval=FALSE, include=FALSE}
+# How does biodiversity change over the salinity gradient
+iNEXT_manual_df %>%
+  dplyr::filter(Method == "Observed") %>%
+  ggplot(aes(x = salinity_psu, y = qD)) + 
+  facet_wrap(.~Order.q, scales = "free") + 
+  geom_point(aes(color = station)) + 
+  stat_smooth(method = "lm", formula = y ~poly(x, 2)) + 
+  labs(x = "Salinity (PSU)", y = "# of ASVs") + 
+  scale_color_manual(values = station_colors) + 
+  theme_bw() + 
+  theme(legend.position = "bottom",
+        legend.title = element_blank()) 
+```
+
+
+Here, there appears to be a few different results: 
+
+- There appears to be a negative & linear relationship between salinity and Richness. This indicates that freshwaters have the highest number of ASVs (genearlly around ~150 ASVs) and as we gain more and more salt in the water, there are fewer species (closer to ~110 ASVs)! We will test this more below. :)  
+- Taking the Richness relationship above, we also need to note that there seems to be a high amount of variability within the brackish samples, 
+- Shannon & Simpson diversity appear to have a "U" shaped diversity curve!  
+- The "U" shape indicates that diversity measures that also weight relative abundance (common and dominant taxa) is highest at the two ends of the spectrum... this indicates that there are fewer dominant species in brackish waters.  
+
+### Explore Richness More
+
+```{r richness-vs-salinity, eval=FALSE, include=FALSE}
+# Make a richness data frame
+richness_df <- 
+  obs_div_df %>%
+  dplyr::filter(Method == "Observed") %>%
+  dplyr::filter(Order.q == 0)
+
+# Actually run the linear model
+rich_vs_sal_lm <- 
+  lm(qD ~ salinity_psu, data = richness_df)
+
+# Show me the model results
+rich_vs_sal_lm
+
+# Type?
+class(rich_vs_sal_lm)
+
+# Summary of lm
+summary(rich_vs_sal_lm)
+```
+
+In the output:
+
+- **Coefficients** refer to the 𝛽’s
+- **Estimate** is the estimate of each coefficient
+- **Std. Error** is the standard error of the estimate
+- **t value** is the coefficient divided by its standard error
+- **Pr(>|t|)** is the p-value for the coefficient
+- The **residual standard error** is the estimate of the variance of 𝜖
+- **Degrees of freedom** is the sample size minus # of coefficients estimated
+- **R-squared** is (roughly) the proportion of variance in the outcome explained by the model, instead we should always report the **adjusted R-squared**, which takes into penalizes the addition of unnecessary predictors, which provides a more accurate measure of model fit.
+    - Note that the R-squared value will always increase/stay the same when you add more predictors, even if they are not relevant!
+- The **F-statistic** compares the fit of the model as a whole to the null model (with no covariates)
+    - When comparing models, we always want to take the model with the higher F-statistic because it indicates a stronger relationship between the predictor varaibles and the dependent variables, suggesting that the model is better. 
+
+
+```{r plot-richness-sal, fig.height=4, fig.width=4, warning = FALSE, eval=FALSE, include=FALSE}
+richness_df %>% 
+  ggplot(aes(x = salinity_psu, y = qD)) + 
+  geom_point(aes(color = station)) + 
+  stat_smooth(method = "lm") + 
+  labs(x = "Salinity (PSU)", y = "# of ASVs") + 
+  scale_color_manual(values = station_colors) + 
+  theme_bw() + 
+  theme(legend.position = "bottom",
+        legend.title = element_blank()) + 
+  geom_label(aes(x = 20, y = 70), hjust = 0, 
+             label = paste("Adj R2 = ",signif(summary(rich_vs_sal_lm)$adj.r.squared, 2),
+                           "\nIntercept =",signif(rich_vs_sal_lm$coef[[1]],3),
+                           " \nSlope =",signif(rich_vs_sal_lm$coef[[2]], 2),
+                           " \nP =",signif(summary(rich_vs_sal_lm)$coef[2,4], 2)))
+```
+
+
+
+# Final info for Reproducibility 
+
+## Check Render Time
+```{r stop-time}
+# Take the time now that we are at the end of the script
+end_time <- Sys.time()
+end_time 
+
+# Echo the elapsed time
+elapsed_time <- round((end_time - start_time), 3)
+elapsed_time
+```
+
+## Session Information
+
+```{r session-info}
+# Ensure reproducibility with package version information
+devtools::session_info()
+```

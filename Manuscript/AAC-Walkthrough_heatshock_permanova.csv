@@ -1,0 +1,9 @@
+Host,Metric,Term,Df,R2,F,P
+Pocillopora,Bray-Curtis,Destination,1,0.0731,2.9884,0.001
+Pocillopora,Bray-Curtis,Timepoint (heat shock),1,0.0257,1.0499,0.29
+Pocillopora,Bray-Curtis,Destination x Timepoint,1,0.021,0.8583,0.712
+Pocillopora,Sorensen,Destination,1,0.0465,1.851,0.001
+Pocillopora,Sorensen,Timepoint (heat shock),1,0.0269,1.0719,0.221
+Pocillopora,Sorensen,Destination x Timepoint,1,0.0232,0.9227,0.728
+Porites,Bray-Curtis,Timepoint (heat shock),1,0.0686,1.1041,0.125
+Porites,Sorensen,Timepoint (heat shock),1,0.0657,1.0554,0.25

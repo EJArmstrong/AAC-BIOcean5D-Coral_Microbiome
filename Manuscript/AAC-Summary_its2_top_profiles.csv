@@ -1,0 +1,9 @@
+Host,ITS2_type_profile,Clade,mean_rel_abundance_pct,n_samples_present
+POC,C1d/C1/C42.2/C3-C1b-C3cg-C115k-C45c-C1au-C41p,C,23.91,20
+POC,C1/C42.2/C42g/C42a-C1b-C1au-C1az-C3-C42h,C,19.17,15
+POC,C42.2/C1/C1au/C41p-C1b-C3-C1az-C115k-C115d,C,16.48,13
+POC,C42.2/C1/C42a/C1b-C1au-C1az-C3-C115d-C42az-C41p,C,15.38,12
+POR,C15-C15rz-C15eh-C15sa,C,48.52,28
+POR,C15-C15rz-C15sa-C15m,C,24.53,14
+POR,C15-C15eh-C15rz-C15zp,C,13.94,8
+POR,C15-C15rz-C15zo-C15sa,C,6.81,4

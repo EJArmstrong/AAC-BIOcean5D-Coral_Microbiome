@@ -1,0 +1,444 @@
+---
+title: "06 - AAC - Symbiodiniaceae (ITS2) Community Analyses"
+subtitle: "BIOcean5D reciprocal transplant: Pocillopora meandrina and Porites rus"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 8, fig.height = 5, dpi = 150)
+```
+
+# Purpose and provenance
+
+Symbiodiniaceae ITS2 amplicons were processed externally with **SymPortal**
+(<https://symportal.org/>); this script starts from the finished SymPortal output and
+performs no sequence processing. The inputs were copied out of the separate
+`BIOcean5D` working folder (submission `20250128T160811_armster1`, analysis
+`20250130T094902`) into `Data/06-AAC-ITS2Symbionts/`. Nothing in this repository writes
+back into `BIOcean5D`.
+
+Inputs used here:
+
+* `RData.xlsx` - curated workbook holding the ITS2 **type-profile** absolute and relative
+  abundance tables, the profile metadata (clade, defining sequences) and the `SampleKey`
+  that maps SymPortal sample UIDs to the experimental design.
+* `*.seqs.relative.abund_only.txt` - **post-MED ITS2 sequence** relative abundances
+  (135 samples x 569 sequences).
+* `*_unifrac_sample_distances_C_sqrt.dist` - SymPortal's between-sample **UniFrac**
+  distances for clade C (*Cladocopium*), square-root transformed.
+
+## Which data layer is analysed, and why
+
+Each sample in this dataset carries essentially a **single** ITS2 type profile (mean
+1.1-1.4 profiles detected per sample). The type-profile table is therefore close to a
+categorical assignment, and a Bray-Curtis PERMANOVA computed on it tests *which profile
+was assigned* rather than graded changes in symbiont abundance - an assignment that is
+itself sensitive to sequencing depth and to the detection of minor defining sequences.
+
+All inferential statistics below are consequently run on the **post-MED sequence** layer:
+SymPortal's clade-C UniFrac distances (phylogenetically weighted) and Bray-Curtis on the
+post-MED sequence relative abundances. The type profiles are used for description only.
+
+## Design handling (identical to script 05)
+
+`Origin_Site` in the SymPortal sample key is the **origin** bay, not the fragment's
+current location. Destination is derived from the transplant type: an *Out Transplant*
+sits in the opposite bay, a *Back Transplant* and a *Genotype* sample sit in the origin
+bay. Colonies are keyed as `Host_Origin_Colony` so that, e.g., colony C01 of
+*Pocillopora* at Opunohu is never merged with colony C01 of *Pocillopora* at Tiahura.
+
+Because origin is a property of the colony and destination/timepoint vary within a
+colony, PERMANOVA uses a split-plot permutation design:
+
+* **origin** - whole colonies permuted freely, no permutation within
+  (`Plots(type = "free")`, `Within(type = "none")`);
+* **destination and timepoint** - colonies held fixed, samples permuted within colony
+  (`blocks = Colony_ID`, `Within(type = "free")`).
+
+R-squared and F are unchanged by the permutation scheme; only the p-values differ.
+
+# Prepare workspace
+
+```{r libraries}
+library(vegan)
+library(permute)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(readxl)
+
+dir_data <- file.path("..", "..", "Data", "06-AAC-ITS2Symbionts")
+dir_figs <- file.path("..", "..", "Figures", "06-AAC-ITS2Symbionts")
+dir.create(dir_figs, showWarnings = FALSE, recursive = TRUE)
+
+f_workbook <- file.path(dir_data, "RData.xlsx")
+f_postmed  <- file.path(dir_data,
+  "551_20250128T165403_DBV_20250130T094902.seqs.relative.abund_only.txt")
+f_unifracC <- file.path(dir_data,
+  "20250130T094902_unifrac_sample_distances_C_sqrt.dist")
+
+theme_set(theme_bw(base_size = 11) +
+            theme(panel.grid.minor = element_blank(),
+                  strip.background = element_rect(fill = "grey95", colour = NA)))
+
+col_tp <- c("Pre-HS" = "#4C72B0", "Post-HS" = "#C44E52")
+```
+
+# Import data
+
+```{r import}
+# --- ITS2 type profiles (description only) --------------------------------------
+prof_rela <- readxl::read_excel(f_workbook, sheet = "RData_Rela")
+prof_meta <- readxl::read_excel(f_workbook, sheet = "MetaData", n_max = 60) |>
+  dplyr::filter(!is.na(ITS2_type_profile_UID)) |>
+  dplyr::mutate(UID = as.integer(ITS2_type_profile_UID)) |>
+  dplyr::select(UID, Clade, ITS2_type_profile, Majority_ITS2_sequence)
+
+# --- sample key -> experimental design ------------------------------------------
+opposite_bay <- c("Opunohu" = "Tiahura", "Tiahura" = "Opunohu")
+
+meta <- readxl::read_excel(f_workbook, sheet = "SampleKey") |>
+  dplyr::mutate(
+    Origin      = Origin_Site,
+    Destination = dplyr::if_else(Transplant_Type == "Out Transplant",
+                                 unname(opposite_bay[Origin_Site]), Origin_Site),
+    Host        = dplyr::if_else(grepl("^poc", tolower(Host_Genus)), "POC", "POR"),
+    Colony      = sub("^[OT][BTG](C[0-9]+).*$", "\\1", Sample_ID),
+    Colony_ID   = paste(Host, Origin, Colony, sep = "_"),
+    Timepoint   = dplyr::recode(Stress_Treatment, "Pre HS" = "Pre-HS", "Post HS" = "Post-HS"),
+    SymPortal_ID = as.integer(SymPortal_ID)) |>
+  as.data.frame()
+rownames(meta) <- meta$SymPortal_ID
+
+# --- post-MED sequence relative abundances ---------------------------------------
+postmed <- read.delim(f_postmed, check.names = FALSE)
+rownames(postmed) <- as.character(postmed$sample_uid)
+postmed$sample_uid <- NULL
+
+# --- SymPortal clade-C UniFrac distances -----------------------------------------
+# Format: <sample_name> <tab> <sample_uid> <tab> d1 ... dn, one row per sample, no header.
+raw_u <- strsplit(readLines(f_unifracC), "\t")
+uids  <- vapply(raw_u, function(x) x[2], character(1))
+unifracC <- t(vapply(raw_u, function(x) as.numeric(x[-(1:2)]), numeric(length(raw_u))))
+dimnames(unifracC) <- list(uids, uids)
+
+stopifnot(nrow(meta) == 135,
+          setequal(rownames(meta), rownames(postmed)),
+          setequal(rownames(meta), rownames(unifracC)),
+          all(abs(diag(unifracC)) < 1e-12))
+
+postmed  <- postmed[rownames(meta), ]
+unifracC <- unifracC[rownames(meta), rownames(meta)]
+
+cat("Samples:", nrow(meta),
+    "| post-MED sequences:", ncol(postmed),
+    "| type profiles:", nrow(prof_meta), "\n")
+print(table(meta$Host, meta$Timepoint))
+```
+
+# Design inventory
+
+```{r design-inventory}
+meta |>
+  dplyr::count(Host, Timepoint, Origin, Destination) |>
+  tidyr::pivot_wider(names_from = Timepoint, values_from = n, values_fill = 0) |>
+  dplyr::arrange(Host, Origin, Destination) |>
+  knitr::kable(caption = "ITS2 samples by host, origin and destination")
+```
+
+*Pocillopora* is complete and balanced across all four origin -> destination paths at the
+4-month, Pre-HS and Post-HS timepoints (n = 5 per cell) but has no 2-week samples.
+*Porites* holds all four paths only at 2 weeks; every *Porites* fragment at Tiahura died
+after that point, so all later *Porites* samples sit at Opunohu and destination is
+confounded with transplant status for that host.
+
+# Symbiont composition
+
+```{r composition}
+clade_of_seq <- sub("^([A-I]).*$", "\\1", colnames(postmed))
+
+clade_tab <- postmed |>
+  as.matrix() |> t() |> rowsum(group = clade_of_seq) |> t() |>
+  as.data.frame() |>
+  dplyr::mutate(SymPortal_ID = as.integer(rownames(postmed))) |>
+  dplyr::left_join(dplyr::select(meta, SymPortal_ID, Host, Origin, Destination, Timepoint),
+                   by = "SymPortal_ID")
+
+clade_tab |>
+  dplyr::group_by(Host) |>
+  dplyr::summarise(dplyr::across(dplyr::any_of(c("A","C","D","F","G")),
+                                 ~ round(100 * mean(.x), 3)),
+                   n = dplyr::n(), .groups = "drop") |>
+  knitr::kable(caption = "Mean post-MED clade composition (%) by host")
+```
+
+Both hosts are almost exclusively **Cladocopium** (clade C). **Durusdinium (clade D) is
+effectively absent** - 0.000% in *Pocillopora* and 0.004% in *Porites* - so these corals
+carry no thermotolerant symbiont to shuffle towards under thermal stress.
+
+```{r top-profiles}
+prof_long <- prof_rela |>
+  tidyr::pivot_longer(-sample, names_to = "UID", values_to = "rel") |>
+  dplyr::mutate(UID = as.integer(sub("^X", "", UID)),
+                SymPortal_ID = as.integer(sample)) |>
+  dplyr::left_join(prof_meta, by = "UID") |>
+  dplyr::left_join(dplyr::select(meta, SymPortal_ID, Host, Destination, Timepoint),
+                   by = "SymPortal_ID")
+
+prof_long |>
+  dplyr::group_by(Host, ITS2_type_profile, Clade) |>
+  dplyr::summarise(mean_rel_pct = round(100 * mean(rel, na.rm = TRUE), 2),
+                   n_present = sum(rel > 0, na.rm = TRUE), .groups = "drop") |>
+  dplyr::group_by(Host) |>
+  dplyr::slice_max(mean_rel_pct, n = 4) |>
+  knitr::kable(caption = "Dominant ITS2 type profiles per host")
+
+# profiles detected per sample - motivates working at the sequence layer
+prof_long |>
+  dplyr::group_by(SymPortal_ID, Host) |>
+  dplyr::summarise(n_profiles = sum(rel > 0, na.rm = TRUE), .groups = "drop") |>
+  dplyr::group_by(Host) |>
+  dplyr::summarise(mean_profiles = round(mean(n_profiles), 2),
+                   max_profiles = max(n_profiles), .groups = "drop") |>
+  knitr::kable(caption = "ITS2 type profiles detected per sample")
+```
+
+*Pocillopora* hosts C1/C42-type profiles and *Porites* hosts the C15 lineage - the
+canonical host-specific split within *Cladocopium*.
+
+# PERMANOVA
+
+```{r permanova-helpers}
+# Build a permutation design for either term type.
+perm_design <- function(colony_id, scheme, nperm = 999) {
+  cid <- factor(colony_id)
+  switch(scheme,
+    within  = how(blocks = cid, plots = Plots(strata = cid, type = "none"),
+                  within = Within(type = "free"), nperm = nperm),
+    between = how(plots = Plots(strata = cid, type = "free"),
+                  within = Within(type = "none"), nperm = nperm),
+    free    = how(nperm = nperm))
+}
+
+# Run one model on both distance layers and return a tidy table.
+run_its2 <- function(analysis, ids, formula_txt, scheme, seed = 42) {
+  md <- meta[ids, ]
+  md[c("Timepoint","Destination","Origin","Host")] <-
+    lapply(md[c("Timepoint","Destination","Origin","Host")], factor)
+  perm <- perm_design(md$Colony_ID, scheme)
+
+  dplyr::bind_rows(lapply(c("UniFrac_C", "BrayCurtis_postMED"), function(metric) {
+    dm <- if (metric == "UniFrac_C") {
+      as.dist(unifracC[ids, ids])
+    } else {
+      m <- postmed[ids, , drop = FALSE]
+      vegdist(m[, colSums(m) > 0, drop = FALSE], method = "bray")
+    }
+    set.seed(seed)
+    a <- as.data.frame(adonis2(stats::as.formula(paste("dm ~", formula_txt)),
+                               data = md, permutations = perm, by = "terms"))
+    a |>
+      tibble::rownames_to_column("Term") |>
+      dplyr::filter(!Term %in% c("Residual", "Total")) |>
+      dplyr::transmute(Analysis = analysis, n = length(ids), Metric = metric, Term,
+                       Df, R2 = round(R2, 4), F = round(`F`, 3),
+                       P = round(`Pr(>F)`, 4),
+                       Permutation = c(within = "within-colony", between = "whole-colony",
+                                       free = "unrestricted")[scheme])
+  }))
+}
+
+ids_all <- rownames(meta)
+ids_poc_hs <- rownames(meta)[meta$Host == "POC" & meta$Timepoint %in% c("Pre-HS","Post-HS")]
+ids_por_hs <- rownames(meta)[meta$Host == "POR" & meta$Timepoint %in% c("Pre-HS","Post-HS")]
+
+stopifnot(length(ids_poc_hs) == 40, length(ids_por_hs) == 18)
+# Pocillopora heat-shock window must be balanced 10 per destination x timepoint cell
+print(table(meta[ids_poc_hs, "Destination"], meta[ids_poc_hs, "Timepoint"]))
+# Porites heat-shock window sits entirely at Opunohu
+print(table(meta[ids_por_hs, "Destination"], meta[ids_por_hs, "Timepoint"]))
+```
+
+```{r permanova-run}
+res_its2 <- dplyr::bind_rows(
+  run_its2("Host identity, all samples", ids_all, "Host", "free"),
+  run_its2("POC heat-shock window", ids_poc_hs, "Destination * Timepoint", "within"),
+  run_its2("POC heat-shock window", ids_poc_hs, "Origin", "between"),
+  run_its2("POR heat-shock window", ids_por_hs, "Timepoint", "within"),
+  run_its2("POC Pre vs Post, held at Opunohu",
+           ids_poc_hs[meta[ids_poc_hs, "Destination"] == "Opunohu"], "Timepoint", "within"),
+  run_its2("POC Pre vs Post, held at Tiahura",
+           ids_poc_hs[meta[ids_poc_hs, "Destination"] == "Tiahura"], "Timepoint", "within")
+)
+
+knitr::kable(res_its2, caption = "PERMANOVA on ITS2 post-MED sequence communities")
+```
+
+Reading the table:
+
+* **Host identity** explains 72.5% of UniFrac variation (p = 0.001) - by far the largest
+  effect in the symbiont dataset.
+* In *Pocillopora*, **neither origin (p = 0.587) nor destination (p = 0.208) shifted the
+  symbiont community**, in contrast to the bacterial community, where destination is the
+  governing factor (script 05).
+* The **destination x heat-shock interaction is significant** on both layers
+  (R-squared = 7.5%, p = 0.021 UniFrac; 7.2%, p = 0.010 Bray-Curtis) while neither main
+  effect is. Split by bay, fragments shifted Pre -> Post in both bays but in different
+  directions, which is what produces the interaction without a main effect.
+* In *Porites*, the heat shock produced no detectable shift (p = 0.479 UniFrac).
+
+# Dispersion: variability after heat shock
+
+```{r betadisper}
+run_disp <- function(analysis, ids, seed = 42) {
+  md <- meta[ids, ]
+  tp <- factor(md$Timepoint, levels = c("Pre-HS", "Post-HS"))
+  dplyr::bind_rows(lapply(c("UniFrac_C", "BrayCurtis_postMED"), function(metric) {
+    dm <- if (metric == "UniFrac_C") {
+      as.dist(unifracC[ids, ids])
+    } else {
+      m <- postmed[ids, , drop = FALSE]
+      vegdist(m[, colSums(m) > 0, drop = FALSE], method = "bray")
+    }
+    set.seed(seed)
+    bd <- betadisper(dm, tp)
+    pt <- permutest(bd, permutations = 999)$tab
+    pre <- bd$distances[tp == "Pre-HS"]; post <- bd$distances[tp == "Post-HS"]
+    data.frame(Analysis = analysis, n = length(ids), Metric = metric,
+               F = round(pt$F[1], 3), P = round(pt$`Pr(>F)`[1], 4),
+               mean_pre = signif(mean(pre), 3), mean_post = signif(mean(post), 3),
+               ratio_post_pre = round(mean(post) / mean(pre), 2),
+               wilcox_P = signif(stats::wilcox.test(post, pre)$p.value, 3))
+  }))
+}
+
+res_disp <- dplyr::bind_rows(
+  run_disp("POC heat-shock window", ids_poc_hs),
+  run_disp("POR heat-shock window", ids_por_hs)
+)
+knitr::kable(res_disp, caption = "Homogeneity of multivariate dispersion, Pre-HS vs Post-HS")
+```
+
+The acute heat shock did not move the *mean* symbiont community in *Pocillopora*, but it
+**increased among-fragment variability by about 1.75-fold** (UniFrac F = 8.19, p = 0.005;
+Bray-Curtis F = 8.61, p = 0.003; Wilcoxon on distance-to-centroid p = 0.003 and 0.0003).
+*Porites* shows no such increase (ratio 1.24, p = 0.482). Dispersion was homogeneous
+across destinations (p = 0.938), so the destination terms in the PERMANOVA above reflect
+location rather than spread.
+
+```{r write-tables}
+write.csv(res_its2, file.path(dir_data, "06-AAC-ITS2Symbionts_permanova.csv"),
+          row.names = FALSE)
+write.csv(res_disp, file.path(dir_data, "06-AAC-ITS2Symbionts_dispersion.csv"),
+          row.names = FALSE)
+```
+
+# Figures
+
+```{r fig-composition}
+plot_CladeComposition <- clade_tab |>
+  tidyr::pivot_longer(dplyr::any_of(c("A","C","D","F","G")),
+                      names_to = "Clade", values_to = "rel") |>
+  dplyr::group_by(Host, Timepoint, Clade) |>
+  dplyr::summarise(rel = mean(rel), .groups = "drop") |>
+  ggplot(aes(x = Timepoint, y = 100 * rel, fill = Clade)) +
+  geom_col(width = 0.75) +
+  facet_wrap(~ Host, scales = "free_x") +
+  scale_fill_brewer(palette = "Set2") +
+  labs(x = NULL, y = "mean relative abundance (%)",
+       title = "Post-MED ITS2 clade composition",
+       subtitle = "Cladocopium dominates both hosts; Durusdinium is absent") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+ggsave(file.path(dir_figs, "06-AAC-ITS2Symbionts_plot_CladeComposition.png"),
+       plot = plot_CladeComposition, width = 8, height = 4.5, dpi = 300)
+plot_CladeComposition
+```
+
+```{r fig-pcoa}
+pc  <- cmdscale(as.dist(unifracC[ids_poc_hs, ids_poc_hs]), k = 2, eig = TRUE)
+ev  <- round(100 * pc$eig[1:2] / sum(pc$eig[pc$eig > 0]), 1)
+set.seed(42)
+bd  <- betadisper(as.dist(unifracC[ids_poc_hs, ids_poc_hs]),
+                  factor(meta[ids_poc_hs, "Timepoint"], levels = c("Pre-HS", "Post-HS")))
+
+dat_pcoa <- data.frame(
+  Axis1 = 1000 * pc$points[, 1], Axis2 = 1000 * pc$points[, 2],
+  dist_centroid = 1000 * bd$distances,
+  meta[ids_poc_hs, c("Origin", "Destination", "Timepoint", "Colony_ID")]) |>
+  dplyr::mutate(Timepoint = factor(Timepoint, levels = c("Pre-HS", "Post-HS")))
+
+plot_HeatShockPCoA <- ggplot(dat_pcoa, aes(Axis1, Axis2,
+                                           colour = Timepoint, shape = Destination)) +
+  stat_ellipse(aes(group = Timepoint, fill = Timepoint), geom = "polygon",
+               alpha = 0.10, linetype = "dashed", level = 0.95, show.legend = FALSE) +
+  geom_point(size = 2.6, stroke = 0.8) +
+  scale_colour_manual(values = col_tp) +
+  scale_fill_manual(values = col_tp) +
+  labs(x = paste0("PCoA 1 (", ev[1], "%)"), y = paste0("PCoA 2 (", ev[2], "%)"),
+       shape = "Held at",
+       title = "Cladocopium community, Pocillopora heat-shock window",
+       subtitle = expression(paste("destination ", symbol("\264"),
+                                   " heat shock: ", R^2, " = 7.5%, p = 0.021")),
+       caption = "axis units x 10^-3 (clade-C UniFrac)")
+
+ggsave(file.path(dir_figs, "06-AAC-ITS2Symbionts_plot_HeatShockPCoA.png"),
+       plot = plot_HeatShockPCoA, width = 6.5, height = 5, dpi = 300)
+plot_HeatShockPCoA
+```
+
+```{r fig-dispersion}
+plot_Dispersion <- ggplot(dat_pcoa, aes(x = Timepoint, y = dist_centroid,
+                                        colour = Timepoint, fill = Timepoint)) +
+  geom_boxplot(alpha = 0.30, width = 0.55, outlier.shape = NA, show.legend = FALSE) +
+  geom_jitter(width = 0.13, size = 2.2, alpha = 0.9, show.legend = FALSE) +
+  facet_wrap(~ Destination, labeller = labeller(Destination = function(x) paste("held at", x))) +
+  scale_colour_manual(values = col_tp) +
+  scale_fill_manual(values = col_tp) +
+  labs(x = NULL, y = expression(paste("distance to group centroid (x ", 10^-3, ")")),
+       title = "Among-fragment variability rises after heat shock",
+       subtitle = "Pocillopora, clade-C UniFrac: dispersion x 1.75, F = 8.19, p = 0.005")
+
+ggsave(file.path(dir_figs, "06-AAC-ITS2Symbionts_plot_Dispersion.png"),
+       plot = plot_Dispersion, width = 7, height = 4.5, dpi = 300)
+plot_Dispersion
+```
+
+# Summary
+
+1. **Host identity is the dominant axis** of symbiont community structure
+   (R-squared = 72.5%, p = 0.001): *Pocillopora* carries C1/C42 profiles, *Porites* the
+   C15 lineage. Both are essentially pure *Cladocopium*; **Durusdinium is absent**, so
+   there is no thermotolerant symbiont available for shuffling.
+2. **Transplantation did not restructure the symbiont community.** Neither origin
+   (p = 0.587) nor destination (p = 0.208) is significant in *Pocillopora* - the opposite
+   of the bacterial result, where destination governs composition and *Endozoicomonas*
+   presence (script 05). Symbiont communities are host-controlled and site-insensitive on
+   this timescale, while the bacterial community tracks the environment.
+3. **The acute heat shock destabilised rather than shifted the symbiont community.** The
+   mean community did not move, but among-fragment dispersion increased ~1.75-fold in
+   *Pocillopora* (p = 0.005 UniFrac, p = 0.003 Bray-Curtis) and the response differed
+   between bays (interaction p = 0.021). *Porites* showed neither effect.
+
+# Caveats
+
+* ITS2 type profiles are near-categorical here (1.1-1.4 per sample); all statistics use
+  the post-MED sequence layer, and the profile tables are descriptive only.
+* The *Porites* heat-shock window (n = 18) lies entirely at Opunohu, so no destination
+  contrast is possible for that host and its null results are low-powered.
+* SymPortal's UniFrac distances are taken as published; this script does not re-derive
+  the clade-C phylogeny.
+* Dispersion and PERMANOVA were run on the same distance matrices; the dispersion result
+  is reported because the PERMANOVA main effect for timepoint was *not* significant,
+  so the two are not competing explanations of one signal.
+
+```{r session-info}
+sessionInfo()
+```

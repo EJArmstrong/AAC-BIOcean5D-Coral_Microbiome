@@ -1,0 +1,59 @@
+# Retired git directory kept as a safety copy during the repository rebuild.
+# MUST be ignored: it is a full 7.5 GB repository sitting inside the working tree,
+# and `git add -A` will otherwise try to commit all of it.
+_git-old/
+_git-dead/
+
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+DADAFilteredSeqs/
+SilvaDB/
+
+# LaTeX build leftovers from knitting Rmd to PDF (.html and .md outputs are kept)
+Analysis/**/*.tex
+Analysis/**/*.log
+
+# ---------------------------------------------------------------------------
+# Large files. Nothing in this repository should carry sequence data, reference
+# genomes or aligner indices. The RNAseq read set alone is 41 GB (68 single-end
+# FASTQs) and the PMEA_v1 reference is 347 Mb; both live outside the repo, in
+# BIOcean5D/Data_Sequences and in scratch respectively.
+#
+# If a large derived file ever genuinely has to be versioned, track it with
+# git LFS rather than committing it directly:
+#     git lfs install
+#     git lfs track "Data/07-AAC-RNAseq/*.rds"
+#     git add .gitattributes
+# ---------------------------------------------------------------------------
+*.fastq
+*.fastq.gz
+*.fq
+*.fq.gz
+
+# Superseded step-01 inputs: the 44 environmental/control FASTQs that had been
+# trimmed one cutadapt pass short of the corals (221 bp, retaining the terminal
+# TAA of 515F), replaced 2026-10-27 by their .fwd equivalents from
+# BIOcean5D/Data_Sequences/True_Sequences_16S/HostRemoved. Kept locally only so
+# the pre-repair ASV table can be reproduced; safe to delete.
+Data/00-AAC-Sequences/_mistrimmed_superseded/
+*.bam
+*.sam
+*.cram
+*.bai
+*.fna
+*.gff
+*.gff3
+*.gtf
+salmon_index/
+Data/07-AAC-RNAseq/ref/
+Data/07-AAC-RNAseq/**/*.fastp.json
+Data/07-AAC-RNAseq/**/*.fastp.html
+
+# Regenerable step-01/03 intermediates and MaAsLin2 output. These are rebuilt by a
+# re-knit, so keeping them out of history avoids committing successive copies
+# (dadaF.ASV.rds is 37.6 MB and FastTree.log 17.2 MB per version).
+Data/01-AAC-AssignSeqVariants/DADA2-Results/01-AAC-AssignSeqVariants_dadaF.ASV.rds
+Data/03-AAC-PhylogeneticTree/FastTree.log
+maaslin2_output_directory/

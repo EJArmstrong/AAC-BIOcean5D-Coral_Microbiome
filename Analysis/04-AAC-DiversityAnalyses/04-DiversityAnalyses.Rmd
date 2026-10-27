@@ -1,0 +1,2484 @@
+---
+title: "04-DiversityAnalyses"
+author: "Eric J Armstrong"
+date: "2026-1-26"
+
+output:
+  html_document:
+    df_print: paged
+    theme: cerulean
+    highlight: haddock
+    toc: yes
+    toc_depth: 3
+    toc_float:
+      collapsed: no
+      smooth_scroll: yes
+    code_fold: show
+  word_document:
+    toc: yes
+    toc_depth: '3'
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+<style>
+pre code, pre, code {
+  white-space: pre !important;
+  overflow-x: scroll !important;
+  word-break: keep-all !important;
+  word-wrap: initial !important;
+}
+</style>
+
+## R Markdown
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+#### Purpose of this file  
+
+This file has all of the code for the the main analysis to reproduce all figures except Figure S9 in the Schmidt et al. manuscript entitled **"Microhabitats shape diversity-productivity relationships in freshwater bacterial communities"**, published by [FEMS Microbiology Ecology](https://doi.org/10.1093/femsec/fiaa029). 
+
+*Note*: To see how to reproduce figure S9 please see the github for this project and go to [analysis/OTU_Removal_Analysis.html](https://deneflab.github.io/Diversity_Productivity/analysis/OTU_Removal_Analysis.html)  on the github page.
+
+##### If you have any questions, you are welcome to email the corresponding author at armstrong@berkeley.edu or tweet him at [EricJ_Armstrong](https://x.com/EricJ_Armstrong).
+
+Useful links:
+https://r-from-a-learners-perspective.readthedocs.io/en/latest/part5/
+
+
+```{r setup, include = FALSE}
+path <- "C:/Users/uax75/OneDrive/Documents/R/BIOcean5D-Coral_Microbiome"
+
+knitr::opts_chunk$set(
+  collapse = TRUE, 
+  echo=TRUE,
+  comment="#>", 
+  message=FALSE,
+  warning=FALSE,
+	fig.align="center",
+  fig.width=7,
+  fig.height=5,
+  dpi=150)
+knitr::opts_knit$set(root.dir = path)
+```
+
+
+# 1. Prepare Workspace
+Load necessary R packages and set default parameters
+```{r}
+#--1.1--Attach necessary libraries-----------
+  
+  library(dada2)
+  library(ggplot2)
+  library(fastmatch)
+  library(Biostrings)
+  library(phyloseq)
+  library(expss)
+  library(xlsx)
+  library(RColorBrewer)
+  library(grid)
+  library(tidyverse)  # Pretty plotting and data manipulation 
+  library(phyloseq)   # Easier data manipulation
+  library(data.table)
+  library(R.utils)
+  library(xlsx)
+  library(expss)
+  library(dplyr)
+  library(metacoder)
+  library(vegan)
+
+#--1.2--Set output directories--------
+
+  #--1.2a--Local working directory
+    dir_root <- "C:/Users/uax75/OneDrive/Documents/R/BIOcean5D-Coral_Microbiome"
+    #  setwd("C:/Users/uax75/OneDrive/Documents/R/BIOcean5D")
+
+  #--1.2b--Prefix to prepend to output files
+    outputPrefix <- "04-DiversityAnalyses_"
+    
+  #--1.2c--Data input directory
+    dir_input_data <- paste(dir_root, "/Data", sep = "")
+    fs::dir_create(dir_input_data)
+    
+  #--1.2d--Results output directories
+    dir_output_tab <- paste(dir_root, "/Results/Tables", sep = "")
+    fs::dir_create(dir_output_tab)
+    dir_output_fig <- paste(dir_root, "/Results/Figures", sep = "")
+    fs::dir_create(dir_output_fig)
+    dir_output_dat <- paste(dir_root, "/Results/RFiles", sep = "")
+    fs::dir_create(dir_output_dat)
+
+#--1.3--Define base parameters and custom plotting themes--------
+
+  #--1.3a--Set random seed
+    set.seed(123)
+    
+  #--1.3b--Define output font
+    windowsFonts(Times = windowsFont("Times New Roman"))
+    
+  #--1.3c--Define custom plotting theme(s)
+    theme_set(theme_bw())
+    
+    mytheme1 <- ggplot2::theme_bw() +
+      ggplot2::theme(panel.grid.major = element_blank(),
+                     panel.grid.minor = element_blank(),
+                     # legend.position = 'top',
+                     panel.background = element_blank(),
+                     axis.line = element_line(colour = "black"),
+                     strip.background = element_blank(), 
+                     legend.text = element_text(size = 12, face = 'bold'),
+                     legend.position=c(0.5, 1),
+                     legend.direction="horizontal",
+                     axis.text.x = element_text(size = 16, face="bold.italic",
+                                                 angle = 0, 
+                                                hjust = 0.5, vjust = 0.5),
+                     axis.text.y = element_text(size = 24, face="bold"),
+                     strip.text.x = element_blank(), 
+                     axis.title.x = element_text(size = 14, face="bold"),
+                     axis.title.y = element_text(size = 24, face="bold"))
+
+  #--1.3d--Define custom color palette(s)
+    mycolors1 <- c("coral", # Coral Host (Pocillopora)
+                   "tomato4", # Coral Host (Porites)
+                   "turquoise", # Seawater (0.2 um)
+                   "turquoise4", # Seawater (3 um)
+                   "goldenrod" # Sediment
+                   )
+```
+
+
+# 2. Import Data
+```{r load-data}
+
+#--2.1--Reading in the 16S metaBarcoding  Data--------
+  # Note the pruned OTU table was generated from the raw data with the following script: XXX.Rmd
+
+  #--2.1a--Load a phyloseq object named ps_raw
+    load(paste(dir_input_data, "/1-DataPrep-BIO5D-ps_raw.RData", sep = ""))
+
+  #--2.1b--Remove chloroplast and mitochondria sequences
+    # remotes::install_github("peterolah001/BiMiCo")
+    library(BiMiCo)
+    ps_bact <- BiMiCo::rm_nonbac(ps_raw)
+
+  #--2.1c--Count the number of bacterial taxa in the dataset
+    ntaxa(ps_raw)
+    ntaxa(ps_bact)
+
+```
+
+# 3. Community Diversity Analysis - Alpha Diversity
+*NOTE*: You MUST use the raw (not rarefied!) counts for these estimates to be meaningful
+See discussion here: https://github.com/joey711/phyloseq/issues/287 and here: http://joey711.github.io/phyloseq/plot_richness-examples.html
+
+```{r div-alpha}
+#--3.1--Calculate richness & alpha diversity indices--------
+  # Note that ‘Observed’ is the sample taxonomic richness. 
+  # The other three indices combine richness and abundance data for each taxon.
+
+  div_alpha <- estimate_richness(ps_bact,
+                                split = TRUE,
+                                measures = c("Observed", 
+                                             "Shannon", 
+                                             "InvSimpson"))
+
+  #--3.1a--Rename 'Observed' to 'Richness'
+    names(div_alpha)[names(div_alpha) == 'Observed'] <- 'Richness'
+
+#--3.2--Add other diversity indices not calculated by phyloseq--------
+
+  library(metagMisc)
+
+  species_counts <- phyloseq_ntaxa_by_tax(ps_bact, TaxRank = "Species")
+  head(species_counts)
+
+  #--3.2a--Count number of species in each sample
+    S <- vegan::specnumber(
+      t(as.data.frame(t(ggClusterNet::vegan_otu(ps_bact)))))
+
+  #--3.2b--Calculate diversity indices
+    div_alpha$Pielou_evenness <- div_alpha$Shannon/log(S)
+    div_alpha$Simpson_evenness <- div_alpha$InvSimpson/S
+
+#--3.3--Add alpha diversity indices to phyloseq object--------
+
+  #--3.3a--merge the two dataframes
+    sample_data(ps_bact) <- cbind(sample_data(ps_bact), div_alpha)
+    index <- data.frame(sample_data(ps_bact))
+    index$SiteSubtypeTransTreat <- paste(index$Site,
+                                         index$Subtype,
+                                         index$Transplant,
+                                         index$Treatment, sep=" ")
+                     
+#--3.4--Save alpha diversity analysis output(s)--------
+  FileName <- paste(dir_output_tab, 
+                    "/Table-S1_Alpha-Diversity-Summary_AllIndices.csv",
+                    sep = "")
+  
+  write.csv(index, FileName, sep = "", row.names = FALSE)
+
+#--3.5--Overall difference detection--------
+
+  #--3.5a--Kruskal-Wallis tests between Sampling Groups
+
+#   ## Kruskal-Wallis tests for the effect of Species x Tissue
+# library(rstatix)
+#     data_krusk_Shannon <- index %>%
+#       subset(Host %in% c("POC") &
+#              Transplant %in% "Genotype") %>%
+#       kruskal_test(Shannon ~ Site)
+#     data_krusk_Richness <- index %>%
+#       kruskal_test(Richness ~ SpeciesType)
+#     data_krusk_Evenness <- index %>%
+#       kruskal_test(Pielou_evenness ~ SpeciesType)
+#     
+#     data_krusk_SpeciesType <- rbind(data_krusk_Shannon,
+#                                     data_krusk_Richness,
+#                                     data_krusk_Evenness)
+#     data_krusk_SpeciesType <- data.frame(Variable = "SpeciesTissue",
+#                                          data_krusk_SpeciesType)
+#     colnames(data_krusk_SpeciesType)[c(2, 4)] <- c("DiversityIndex",
+#                                                    "RankSumStat")
+#     FileName_Krusk_SpeciesType <- paste(alppath, 
+#                             "/Alpha-Diversity_Kruskal-Wallis_SpeciesType.csv", 
+#                             sep = "")
+#     write.csv(data_krusk_SpeciesType, FileName_Krusk_SpeciesType, 
+#               sep = "", row.names = FALSE)
+#     
+#   ## Post-Hoc Dunn Test for the effect of Ile
+#     data_dunn_Shannon <- index %>%
+#       subset(Host %in% c("POC") &
+#              Transplant %in% "Genotype") %>%
+#       dunn_test(Shannon ~ Site, p.adjust.method = "BH")
+#     data_dunn_Richness <- index %>%
+#       dunn_test(Richness ~ SpeciesType, p.adjust.method = "BH")
+#     data_dunn_Evenness <- index %>%
+#       dunn_test(Pielou_evenness ~ SpeciesType, p.adjust.method = "BH")
+#     data_dunn_SpeciesType <- rbind(data_dunn_Shannon,
+#                                    data_dunn_Richness,
+#                                    data_dunn_Evenness)
+#     data_dunn_SpeciesType <- data.frame(Variable = "SpeciesTissue",
+#                                         data_dunn_SpeciesType)
+#     colnames(data_dunn_SpeciesType)[c(2, 7)] <- c("DiversityIndex",
+#                                                   "z-value")
+#     FileName_Dunn_SpeciesType <- paste(alppath,
+#                                        "/Alpha-Diversity_Dunn-Test_SpeciesType.csv",
+#                                        sep = "")
+#     write.csv(data_dunn_SpeciesType, 
+#               FileName_Dunn_SpeciesType, sep = "", row.names = FALSE)
+#     
+#   ## Kruskal-Wallis tests for the effect of Island w/in SpeciesTissues
+#     data_krusk_Ile_Shannon <- index %>%
+#       group_by(SpeciesType) %>%
+#       kruskal_test(Shannon ~ Ile)
+#     data_krusk_Ile_Richness <- index %>%
+#       group_by(SpeciesType) %>%
+#       kruskal_test(Richness ~ Ile)
+#     data_krusk_Ile_Evenness <- index %>%
+#       group_by(SpeciesType) %>%
+#       kruskal_test(Pielou_evenness ~ Ile)
+#     
+#     data_krusk_Ile <- rbind(data_krusk_Ile_Shannon,
+#                             data_krusk_Ile_Richness,
+#                             data_krusk_Ile_Evenness)
+#     data_krusk_Ile <- data.frame(Variable = "Ile",
+#                                  data_krusk_Ile)
+#     colnames(data_krusk_Ile)[c(2:3, 5)] <- c("SpeciesTissue", 
+#                                           "DiversityIndex",
+#                                           "RankSumStat")
+#     FileName_Krusk_Ile <- paste(alppath, 
+#                             "/Alpha-Diversity_Kruskal-Wallis_Ile.csv", sep = "")
+#     write.csv(data_krusk_Ile, FileName_Krusk_Ile, sep = "", row.names = FALSE)
+#     
+#   ## Post-Hoc Dunn Test for the effect of Ile
+#     data_dunn_Ile_Shannon <- index %>%
+#       group_by(SpeciesType) %>%
+#       dunn_test(Shannon ~ Ile, p.adjust.method = "BH")
+#     data_dunn_Ile_Richness <- index %>%
+#       group_by(SpeciesType) %>%
+#       dunn_test(Richness ~ Ile, p.adjust.method = "BH")
+#     data_dunn_Ile_Evenness <- index %>%
+#       group_by(SpeciesType) %>%
+#       dunn_test(Pielou_evenness ~ Ile, p.adjust.method = "BH")
+#     data_dunn_Ile <- rbind(data_dunn_Ile_Shannon,
+#                            data_dunn_Ile_Richness,
+#                            data_dunn_Ile_Evenness)
+#     data_dunn_Ile <- data.frame(Variable = "Ile",
+#                                 data_dunn_Ile)
+#     colnames(data_dunn_Ile)[c(2:3, 8)] <- c("SpeciesTissue",
+#                                             "DiversityIndex",
+#                                             "z-value")
+#     FileName_Dunn_Ile <- paste(alppath, 
+#                             "/Alpha-Diversity_Dunn-Test_Ile.csv", sep = "")
+#     write.csv(data_dunn_Ile, FileName_Dunn_Ile, sep = "", row.names = FALSE)
+
+
+#--3.5--Comparison of Alpha Diversity Between Categories--------
+  
+  library(ggforce)
+  library(dplyr)
+  library(ggplot2)
+  library(emmeans)
+  library(multcomp)
+  library(tidyr)
+  library(rcompanion)
+  library(multcompView)
+  library(stringr)
+  library(ggnewscale)
+  library(FSA)
+
+  #--3.5a--Dunn Test
+    dunn_Subtype <- dunnTest(Shannon ~ Subtype,
+                                 data = index,
+                                 method = "bh")
+      
+    dunn_Subtype_res <- dunn_Subtype$res
+    
+    dunn_Subtype_res$Comparison <- gsub(".2-micron", "02um",
+                                        dunn_Subtype_res$Comparison)
+    dunn_Subtype_res$Comparison <- gsub("3-micron", "3um",
+                                        dunn_Subtype_res$Comparison)
+    dunn_Subtype_res$Comparison <- gsub(" - ", "-", dunn_Subtype_res$Comparison)
+    dunn_Subtype_res$Comparison <- gsub(" ", ".", dunn_Subtype_res$Comparison)
+    
+    cld_Subtype <- cldList(comparison = dunn_Subtype_res$Comparison,
+                               p.value    = dunn_Subtype_res$P.adj,
+                               threshold  = 0.05)[1:2]
+    
+    cld_Subtype$Subtype <- str_sub(
+      gsub("//.", " ", cld_Subtype$Group), end = -4)
+    cld_Subtype$Type <- str_sub(cld_Subtype$Group, start = -3)
+    
+  #--3.5b--ANOVA
+    model <- aov(Shannon ~ Subtype, data = index)
+    tukey_means <- emmeans(model, "Subtype")
+    cld(tukey_means, Letters = letters, adjust = "tukey")
+
+#--3.6--Boxplot of Alpha Diversity by SubType--------
+    
+  plot_AlphaDiv_Subtype <- 
+      phyloseq::plot_richness(ps_raw,
+                              x = "Subtype",
+                              measures = c("Shannon"),
+                              color = "Subtype") +
+    annotate("text", x = 1, y = 5.6, label = "a", # DunnTest result
+             color = "black", size = 8) +
+    annotate("text", x = 1, y = 5.4,
+             label = paste0("n = ",
+                            nrow(subset_samples(
+                              ps_raw,
+                              Subtype == "Coral POC")@sam_data)),
+             size = 6) +
+    annotate("text", x = 2, y = 6.0, label = "bc", # DunnTest result
+             color = "black", size = 8) +
+    annotate("text", x = 2, y = 5.8,
+             label = paste0("n = ",
+                            nrow(subset_samples(
+                              ps_raw,
+                              Subtype == "Coral POR")@sam_data)),
+             size = 6) +
+    annotate("text", x = 3, y = 4.4, label = "ab", # DunnTest result
+             color = "black", size = 8) +
+    annotate("text", x = 3, y = 4.2,
+             label = paste0("n = ",
+                            nrow(subset_samples(
+                              ps_raw,
+                              Subtype == "Seawater 0.2-micron")@sam_data)),
+             size = 6) +
+    annotate("text", x = 4, y = 6.4, label = "cd", # DunnTest result
+             color = "black", size = 8) +
+    annotate("text", x = 4, y = 6.2,
+             label = paste0("n = ",
+                            nrow(subset_samples(
+                              ps_raw,
+                              Subtype == "Seawater 3-micron")@sam_data)),
+             size = 6) +
+    annotate("text", x = 5, y = 6.6, label = "d", # DunnTest result
+             color = "black", size = 8) +
+    annotate("text", x = 5, y = 6.4,
+             label = paste0("n = ",
+                            nrow(subset_samples(
+                              ps_raw,
+                              Subtype == "Sediment")@sam_data)),
+             size = 6) +
+    new_scale_color() +
+    geom_sina(aes(color=sample_data(ps_raw)$Sutype), 
+              alpha = 0.5, show.legend = FALSE) +
+    geom_violin(lwd = 0.9, alpha = 0.4, 
+                aes(fill=NULL, color=sample_data(ps_raw)$Subtype)) +
+    geom_boxplot(aes(color=sample_data(ps_raw)$Subtype), 
+                 outlier.shape = NA, width = 0.1,
+                 position = position_dodge(0.9),
+                 show.legend = FALSE) +
+    scale_color_manual(name = "", values = c("coral","tomato4",
+                                           "turquoise","turquoise4",
+                                           "goldenrod"),
+                       labels = c("Coral - Pocillopora", "Coral - Porites",
+                                  "Seawater - 0.2  µm", "Seawater - 3  µm",
+                                  "Sediment")) +
+    xlab("") +
+    scale_y_continuous(limits = c(0, 7), expand = c(0, 0),
+                       breaks = seq(from = 0, to = 7, by = 1),
+                       labels = seq(from = 0, to = 7, by = 1)) +
+    scale_x_discrete(
+      labels = c("Coral - Pocillopora", "Coral - Porites",
+                                  "Seawater - 0.2  µm", "Seawater - 3  µm",
+                                  "Sediment")) +
+    ylab("Shannon Index") +
+    guides(fill = "none") +
+    theme(panel.grid.major = element_blank(),
+                     panel.grid.minor = element_blank(),
+                     # legend.position = 'top',
+                     panel.background = element_blank(),
+                     axis.line = element_line(colour = "black"),
+                     strip.background = element_blank(), 
+                     legend.text = element_text(size = 12, face = 'bold'),
+                     legend.position=c(0.5, 1),
+                     legend.direction="horizontal",
+                     axis.text.x = element_text(size = 16, face="bold.italic",
+                                                 angle = 0, 
+                                                hjust = 0.5, vjust = 0.5),
+                     axis.text.y = element_text(size = 24, face="bold"),
+                     strip.text.x = element_blank(), 
+                     axis.title.x = element_text(size = 14, face="bold"),
+                     axis.title.y = element_text(size = 24, face="bold"))
+        
+  plot_AlphaDiv_Subtype$layers <- plot_AlphaDiv_Subtype$layers[-1]
+  plot_AlphaDiv_Subtype
+  
+  pdf(file = 
+        paste0(dir_output_fig, 
+          "/Plot_Alpha-Diversity-Subtype.pdf"), 
+      w = 12, h = 14)
+  plot_AlphaDiv_Subtype
+  dev.off()
+  
+  png(file = 
+        paste0(dir_output_fig, 
+          "/Plot_Alpha-Diversity-Sbutype.png"), 
+      w = 12, h = 14, units="in", res=300)
+  plot_AlphaDiv_Subtype
+  dev.off()
+
+# # Boxplot 2 - Coral Holobiont Alpha Diversity by Site
+#   library(rcartocolor)
+#   colpal_Sex <- carto_pal(n = 2, "Bold")[c(3,1,2)]
+# 
+#   dunnTest_SpeciesType_cld$SpeciesType <- 
+#     str_replace_all(dunnTest_SpeciesType_cld$Group, 
+#                c("Acanthurus"="Acanthurus ", 
+#                  "triostegus"="triostegus ",
+#                  "Zanclus"="Zanclus ",
+#                  "cornutus"="cornutus ",
+#                  "GUT"=" GUT",
+#                  "MUC"=" MUC"))
+#   dunnTest_SpeciesType_cld$Species <- str_sub(gsub("//.", " ",
+#                                                    dunnTest_SpeciesType_cld$Group),
+#                                               end=-4)
+#   dunnTest_SpeciesType_cld$Type <- str_sub(dunnTest_SpeciesType_cld$SpeciesType, 
+#                                            start = -3)
+#   
+#   ps_pruned_Sex <- subset_samples(ps_pruned, Sex %in% c("F", "Juvenile", "M"))
+#   sample_data(ps_pruned_Sex)$Sex = factor(sample_data(ps_pruned_Sex)$Sex, 
+#                                           levels = c("Juvenile", "F", "M"))
+#   
+#   plot_AlphaDiv_Sex <- plot_richness(ps_pruned_Sex, 
+#                                      x="SpeciesType",
+#                                      measures=c("Shannon"), color="Type") +
+#           new_scale_color() +
+#           geom_sina(aes(color=sample_data(ps_pruned_Sex)$Sex, 
+#                     alpha = 0.5, show.legend = FALSE)) +
+#           geom_violin(lwd = 0.9, alpha = 0.4, 
+#                       aes(fill=NULL, color=sample_data(ps_pruned_Sex)$Sex)) +
+#           geom_boxplot(aes(color=sample_data(ps_pruned_Sex)$Sex), 
+#                        outlier.shape = NA, width = 0.1,
+#                        position = position_dodge(0.9),
+#                        show.legend = FALSE) +
+#           scale_color_manual(name = '',
+#                              values = colpal_Sex,
+#                              labels = c("Juvenile", "Female", "Male")) +
+#           xlab("") +
+#           scale_y_continuous(limits=c(0,6), expand = c(0,0),
+#                              breaks = seq(from = 0, to = 6, by = 1),
+#                              labels = seq(from = 0, to = 6, by = 1)) +
+#           scale_x_discrete(labels = c("A. triostegus /n gut", 
+#                                       "A. triostegus /n mucus",
+#                                       "Z. cornutus /n gut", 
+#                                       "Z. cornutus /n mucus")) +
+#           ylab("Shannon Index") +
+#           guides(fill = "none", alpha = "none") +
+#           theme_bw() +
+#           theme(panel.grid.major = element_blank(), 
+#                 panel.grid.minor = element_blank(), 
+#                 panel.background = element_blank(), 
+#                 axis.line = element_line(colour = "black"),
+#                 strip.background = element_blank(), 
+#                 legend.text = element_text(size = 12, face = 'bold'),
+#                 legend.position=c(0.5, 1),
+#                 legend.direction="horizontal",
+#                 axis.text.x = element_text(size=14, face="bold.italic"),
+#                 axis.text.y = element_text(size=14, face="bold"),
+#                 strip.text.x = element_blank(), 
+#                 axis.title = element_text(size=14, face="bold"))
+#         
+#   plot_AlphaDiv_Sex$layers <- plot_AlphaDiv_Sex$layers[-1]
+#   
+#   library(stringr)
+#   LME_Sex_cld$Type <- str_sub(LME_Sex_cld$SpeciesType, start = -3)
+#   plot_AlphaDiv_Sex <- plot_AlphaDiv_Sex +
+#     geom_text(data = LME_Sex_cld, aes(x = SpeciesType, 
+#                                       y = emmean + 0.1,
+#                                       group = Sex,
+#                                       label = str_trim(.group)),
+#               position = position_dodge(0.9),
+#               vjust = -0.5)
+      
+# #--3.7--Save Shannon index boxplots--------
+#   library(cowplot)
+#   boxplotA <- plot_AlphaDiv_SpeciesType + theme(axis.text.x=element_blank())
+#   boxplotB <- plot_AlphaDiv_Sex + theme(axis.text.x=element_blank())
+#       
+#   plot_AlphaDiv <- plot_grid(boxplotA,
+#                              NULL,
+#                              boxplotB,
+#                              NULL,
+#                              plot_AlphaDiv_Region,
+#                              ncol = 1, labels = c("A", "", "B", "", "C"),
+#                              align = "hv", 
+#                              rel_heights = c(1.5, -0.05, 1, -0.05, 1))
+#       
+#   pdf(file = 
+#         paste0("./Results_and_Plots/Figures/AlphaDiversity-Boxplot_All.pdf"), 
+#       w = 12, h = 12)
+#   plot_AlphaDiv
+#   dev.off()
+#   
+#   png(file = 
+#         paste0("./Results_and_Plots/Figures/AlphaDiversity-Boxplot_All.png"), 
+#       w = 12, h = 12, units="in", res=300)
+#   plot_AlphaDiv
+#   dev.off()
+
+```
+
+
+# 4. Community Diversity Analysis - Beta Diversity
+*Note*: Rarefaction is used to simulate an even number of reads per sample. The rarefaction depth chosen is usually either 90% or 100% of the minimum sample depth. In this case, the 100% value of 100869 reads/sample is used.
+
+```{r rare-data}
+#--4.1--Rarefaction of the data--------
+
+  min_samplecount = min(phyloseq::sample_sums(ps_bact))
+  median_samplecount = median(phyloseq::sample_sums(ps_bact))
+  
+  if (min_samplecount == 0) {
+      print("Some samples contain zero sequences")
+      print("Median sample count used as rarefaction depth")
+      ps_bact_rarefied_median <- phyloseq::rarefy_even_depth(ps_bact,
+                                            rngseed = 1,
+                                            sample.size = median_samplecount,
+                                            replace = FALSE)
+      #Save rarefied data as phyloseq object
+      save(ps_pruned_rarefied_median, 
+           file = paste0(dir_output_dat, "/",  
+                         outputPrefix, 
+                         "ps_pruned_rarefied_median.RData", sep = ""))
+    } else{
+      ps_bact_rarefied <- phyloseq::rarefy_even_depth(ps_bact, 
+                                             rngseed = 1,
+                                             sample.size = min_samplecount,
+                                             replace = FALSE)
+      #Save rarefied data as phyloseq object
+      save(ps_bact_rarefied, 
+           file = paste0(dir_output_dat, "/",
+                         outputPrefix, 
+                         "ps_bact_rarefied.RData", sep = ""))
+    }
+  
+#--4.2--Other transformations of the data--------
+  library(microbiome)
+  
+  #--4.2a--Relative Abundances
+    ps_bact_rarefied_rela <- microbiome::transform(
+      ps_bact_rarefied, transform = "compositional")
+    save(ps_bact_rarefied_rela, 
+         file = paste0(dir_output_dat,  "/",
+                       outputPrefix,
+                       "ps_bact_rarefied_rela.RData", sep = ""))
+    
+  #--4.2b--Hellinger Transformation
+    ps_bact_rarefied_hell <- microbiome::transform(
+      ps_bact_rarefied, transform = "hellinger")
+    save(ps_bact_rarefied_hell, 
+         file = paste0(dir_output_dat,  "/",
+                       outputPrefix,
+                       "ps_bact_rarefied_hell.RData", sep = ""))
+  
+  #--4.2c--Centered Log Ration Transformation
+    ps_bact_rarefied_clr <- microbiome::transform(
+      ps_bact_rarefied, transform = "clr")
+    save(ps_bact_rarefied_clr, 
+         file = paste0(dir_output_dat,  "/",
+                       outputPrefix,
+                       "ps_bact_rarefied_clr.RData", sep = ""))
+  
+#--4.3--Plotting Beta Diversity--------
+  
+  #--4.3a--Set grouping and input variables
+    group = "Subtype"
+    dist = "bray"
+    method = "NMDS"
+    Micromet = "adonis"
+    pvalue.cutoff = 0.05
+    pair = TRUE
+    
+  #--4.3b--Perform dimensional analyses
+    
+    #----NMDS----
+      if (method == "NMDS") {
+        biome <- vector(mode = "list", 
+                        length = length(
+                          unique(sample_data(ps_raw_rarefied)$Subtype))+1)
+        
+        biome[[1]] <- "All Samples"
+        for (j in 2:length(biome)) {
+          biome[j] <- unique(sample_data(ps_raw_rarefied)$Subtype)[j-1]
+          }
+        
+        ps_ord <- vector(mode = "list", length = length(biome))
+        ordi <- vector(mode = "list", length = length(biome))
+        points <- vector(mode = "list", length = length(biome))
+        stress <- vector(mode="character", length = length(biome))
+        colbar <- vector(mode = "list", length = length(biome))
+        dat_points <- vector(mode = "list", length = length(biome))
+        
+        for (j in 2:length(biome)) {
+          
+          ps_ord[[j]] <- subset_samples(ps_raw_rarefied, Subtype %in% biome[j])
+          ordi[[j]] <- phyloseq::ordinate(ps_ord[[j]], 
+                                          method="NMDS", distance="bray")
+          points[[j]] <- ordi[[j]]$points[,1:2]
+          colnames(points[[j]]) <- c("x", "y")
+          stress[j] <- paste("stress:", round(ordi[[j]]$stress,2), sep = " ")
+          colbar[[j]] <- length(levels(sample_data(ps_ord[[j]])$Ile))
+          dat_points[[j]] <- cbind(points[[j]],
+                          as.data.frame(
+                            sample_data(
+                              ps_ord[[j]]))[
+                                match(rownames(points[[j]]),
+                                      rownames(
+                                        as.data.frame(sample_data(
+                                          ps_ord[[j]])))), ])
+          dat_points[[j]]$ID = row.names(dat_points[[j]])
+          }
+        
+        # Fill in objects for case #1 (all samples, no subgroups)
+          ps_ord[[1]] <- ps_raw_rarefied
+          ordi[[1]] <- phyloseq::ordinate(ps_ord[[1]], 
+                                          method="NMDS", distance="bray")
+          points[[1]] <- ordi[[1]]$points[,1:2]
+          colnames(points[[1]]) <- c("x", "y")
+          stress[1] <- paste("stress:", round(ordi[[1]]$stress,2), sep = " ")
+          colbar[[1]] <- length(levels(sample_data(ps_ord[[1]])$Type))
+          dat_points[[1]] <- cbind(points[[1]], 
+                                   as.data.frame(
+                                     sample_data(
+                                       ps_ord[[1]]))[
+                                         match(rownames(points[[1]]), 
+                                               rownames(
+                                           as.data.frame(
+                                             sample_data(ps_ord[[1]])))), ])
+          dat_points[[1]]$ID = row.names(dat_points[[1]])
+      }
+    
+  #--4.3c--NMDS Plot
+    if (method %in% c("NMDS")) {
+      p2 <- vector(mode = "list", length = length(biome))
+      p3 <- vector(mode = "list", length = length(biome))
+      for (j in 2:length(dat_points)) {
+        p2[[j]] <- ggplot(dat_points[[j]], 
+                          aes(x = x, y = y, fill = Subtype)) +
+          geom_point(alpha = 0.7, size = 5, pch = 21) +
+          labs(x = paste(method, "1", sep=""),
+               y = paste(method, "2", sep=""),
+               title = paste(biome[[j]], stress[[j]], sep=" ")) +
+          stat_ellipse(linetype = 2, level = 0.65,
+                       aes(group = Subtype, colour = Subtype))
+        }
+      
+      p2[[1]] <- ggplot(dat_points[[1]], 
+                      aes(x = x, y = y, fill = Subtype)) +
+        geom_point(alpha = 0.7, size = 5, pch = 21) +
+        labs(x = paste(method, "1", sep=""),
+             y = paste(method, "2", sep="")) +
+        annotate(geom = "text", x = -0.75, y = -1.2, size = 8,
+                 label = paste("All Samples ", stress[[1]])) +
+        annotate(geom = "text", x = -0.75, y = -1.4, size = 8,
+               label = expression(paste("PERMANOVA P < 0.001"))) +
+        stat_ellipse(aes(fill = Subtype,
+                     # fill = interaction(Type, Species, sep=':'),
+                     # color = interaction(Type, Species, sep=':'),
+                     color = Subtype),
+                     geom = "polygon", alpha = 0.2)
+    }
+
+
+# Statistical Signficance ----
+# PERMANOVA (Adonis2) 
+library(devtools)
+# install_github("pmartinezarbizu/pairwiseAdonis/pairwiseAdonis")
+meta.ps.prev.log <- as(sample_data(ps_ord[[1]]), "data.frame")
+adonis2(distance(ps_ord[[1]], method="bray") ~ Type, data = meta.ps.prev.log)
+library(pairwiseAdonis)
+test <- pairwise.adonis(
+  phyloseq::distance(ps_ord[[1]], method = "bray"),
+  phyloseq::sample_data(ps_ord[[1]])$Subtype)
+
+# ANOSIM
+dist <- phyloseq::distance(ps_ord[[1]], method = "bray")
+anosim(dist, meta.ps.prev.log$Subtype)
+
+
+p3 <- vector(mode = "list", length = length(biome))
+  
+p3[[1]] = p2[[1]] + 
+    scale_color_manual(name = "", values = c("coral","tomato4",
+                                           "turquoise","turquoise4",
+                                           "goldenrod"),
+                       labels = c("Coral - Pocillopora", "Coral - Porites",
+                                  "Seawater - 0.2  µm", "Seawater - 3  µm",
+                                  "Sediment")) +
+  scale_fill_manual(name = "", values = c("coral","tomato4",
+                                           "turquoise","turquoise4",
+                                           "goldenrod"),
+                       labels = c("Coral - Pocillopora", "Coral - Porites",
+                                  "Seawater - 0.2  µm", "Seawater - 3  µm",
+                                  "Sediment")) +
+  ggtitle(label = "NMDS - Bray Curtis") +
+  theme(panel.grid.major = element_blank(),
+                     panel.grid.minor = element_blank(),
+                     # legend.position = 'top',
+                     panel.background = element_blank(),
+                     axis.line = element_line(colour = "black"),
+                     strip.background = element_blank(), 
+                     legend.text = element_text(size = 20, face = 'bold'),
+                     legend.position=c(0.5, 1),
+                     legend.direction="horizontal",
+                     axis.text.x = element_text(size = 24, face="bold"),
+                     axis.text.y = element_text(size = 24, face="bold"),
+                     strip.text.x = element_blank(), 
+                     axis.title.x = element_text(size = 24, face="bold"),
+                     axis.title.y = element_text(size = 24, face="bold"))
+p3[[1]]
+  
+  
+  FileName <- paste(dir_output_fig, "/",
+                    outputPrefix, "AllSamples_", 
+                    method, "_bray.pdf", sep = "")
+  ggsave(FileName, p3[[1]], width = 20, height = 12)
+  
+  FileName <- paste(dir_output_fig, "/",
+                    outputPrefix, "AllSamples_", 
+                    method, "_bray.png", sep = "")
+  ggsave(FileName, p3[[1]], width = 20, height = 12)
+```
+
+
+## C - Beta Diversity
+```{r}
+
+
+
+# 排序方法选择#----
+#---------如果选用DCA排序
+if (method == "DCA") {
+  # method = "DCA"
+  ordi = phyloseq::ordinate(ps_raw_rarefied_rela, method=method, distance=dist)
+  #提取样本坐标
+  points = ordi$rproj[,1:2]
+  colnames(points) = c("x", "y") #命名行名
+  #提取特征值
+  eig = ordi$evals^2
+}
+
+#---------CCA排序#----
+if (method == "CCA") {
+  # method = "CCA"
+  ordi = phyloseq::ordinate(ps_raw_rarefied_rela, method=method, distance=dist)
+  #样本坐标,这里可选u或者v矩阵
+  points = ordi$CA$v[,1:2]
+  colnames(points) = c("x", "y") #命名行名
+  #提取特征值
+  eig = ordi$CA$eig^2
+}
+
+#---------RDA排序#----
+if (method == "RDA") {
+  # method ="RDA"
+  ordi = phyloseq::ordinate(ps_raw_rarefied_rela, method=method, distance=dist)
+  #样本坐标,这里可选u或者v矩阵
+  points = ordi$CA$v[,1:2]
+  colnames(points) = c("x", "y") #命名行名
+  #提取特征值
+  eig = ordi$CA$eig
+}
+
+#---------MDS排序#----
+if (method == "MDS") {
+  # method = "MDS"
+  # ordi = ordinate(ps_raw_rela, method=ord_meths[i], distance=dist)
+  ordi = phyloseq::ordinate(ps_raw_rarefied_rela, method=method, distance=dist)
+  #样本坐标
+  points = ordi$vectors[,1:2]
+  colnames(points) = c("x", "y") #命名行名
+  #提取解释度
+  eig = ordi$values[,1]
+}
+
+#---------PCoA排序#----
+if (method == "PCoA") {
+  # method = "PCoA"
+  unif = phyloseq::distance(ps_raw_rarefied_rela , method=dist, type="samples")
+  #这里请记住pcoa函数
+  pcoa = stats::cmdscale(unif, k=2, eig=T) # k is dimension, 3 is recommended; eig is eigenvalues
+  points = as.data.frame(pcoa$points) # 获得坐标点get coordinate string, format to dataframme
+  colnames(points) = c("x", "y") #命名行名
+  eig = pcoa$eig
+}
+
+#----PCA分析#----
+# otu_table = as.data.frame(t(ggClusterNet::vegan_otu(ps_raw_rela )))
+# head(otu_table)
+# method = "PCA"
+if (method == "PCA") {
+  otu.pca = stats::prcomp(t(otu_table), scale.default = TRUE)
+  #提取坐标
+  points = otu.pca$x[,1:2]
+  colnames(points) = c("x", "y") #命名行名
+  # #提取荷载坐标
+  # otu.pca$rotation
+  # 提取解释度,这里提供的并不是特征值而是标准差，需要求其平方才是特征值
+  eig=otu.pca$sdev
+  eig=eig*eig
+}
+
+#---------------LDA排序#----
+if (method == "LDA") {
+  #拟合模型
+  # library(MASS)
+  data = t(otu_table)
+  # head(data)
+  data = as.data.frame(data)
+  # data$ID = row.names(data)
+  data = scale(data, center = TRUE, scale = TRUE)
+  dim(data)
+  data1 = data[,1:10]
+  map = as.data.frame(sample_data(ps_raw_rarefied_rela))
+  model = MASS::lda(data, map$Group)
+
+  # 提取坐标
+  ord_in = model
+  axes = c(1:2)
+  points = data.frame(predict(ord_in)$x[, axes])
+  colnames(points) = c("x", "y") #命名行名
+  # 提取解释度
+  eig= ord_in$svd^2
+}
+
+
+
+
+#---------------t-sne排序#----
+# method = "t-sne"
+if (method == "t-sne") {
+  data = t(otu_table)
+  # head(data)
+  data = as.data.frame(data)
+  # data$ID = row.names(data)
+  #
+  data = scale(data, center = TRUE, scale = TRUE)
+
+  dim(data)
+  map = as.data.frame(sample_data(ps_raw_rarefied_hell))
+  # row.names(map)
+  #---------tsne
+  # install.packages("Rtsne")
+  # library(Rtsne)
+
+  tsne = Rtsne::Rtsne(data,perplexity = 3)
+
+  # 提取坐标
+  points = as.data.frame(tsne$Y)
+  row.names(points) =  row.names(map)
+  colnames(points) = c("x", "y") #命名行名
+  stress= NULL
+}
+
+
+# #----差异分析#----
+# 
+# #----整体差异分析#----
+# g = sample_data(ps)$Group %>% unique() %>% length()
+# n = sample_data(ps)$Group%>% length()
+# o = n/g
+# 
+# source("./function/MicroTest.R")
+# source("./function/pairMicroTest.R")
+# 
+# 
+# 
+# if (o >= 3) {
+#   title1 = MicroTest(ps = ps_raw_hell, Micromet = Micromet, dist = dist)
+#   title1
+# } else{
+#   title1 = NULL
+# }
+# 
+# 
+# 
+# if (F) {
+#   #----两两比较#----
+#   pairResult = pairMicroTest(ps = ps_raw_hell, Micromet = Micromet, dist = dist)
+#   
+# } else {
+#   pairResult = "no result"
+# }
+
+
+#----绘图#----
+
+# if (method %in% c("DCA", "CCA", "RDA",  "MDS", "PCoA","PCA","LDA")) {
+#   
+#   map = as.data.frame(phyloseq::sample_data(ps_raw_rarefied_hell))
+#   map$Type = as.factor(map$Type)
+#   colbar = length(levels(map$Type))
+# 
+#   points = cbind(points, map[match(rownames(points), rownames(map)), ])
+#   # head(points)
+#   points$ID = row.names(points)
+#   
+#   p2 =ggplot(points, aes(x=x, y=y, fill = Group)) +
+#     geom_point(alpha=.7, size=5, pch = 21) +
+#     labs(x=paste0(method," 1 (",format(100*eig[1]/sum(eig),digits=4),"%)"),
+#          y=paste0(method," 2 (",format(100*eig[2]/sum(eig),digits=4),"%)"),
+#          title=title1) +
+#     stat_ellipse(linetype=2,level=0.68,aes(group=Group, colour=Group))
+# 
+#   p3 = p2+ggrepel::geom_text_repel(aes(label=points$ID),size = 5)
+#   p3
+# }
+
+
+
+  
+  # FileName <- paste(betapath,"/a2_",method,"bray_label.pdf", sep = "")
+  # ggsave(FileName, p3_2, width = 12, height = 12)
+  # FileName1 <- paste(betapath,"/a2_",method,"bray_label.jpg", sep = "")
+  # ggsave(FileName1 , p3_2, width = 12, height = 12)
+  
+  # 提取出图数据
+  plotdata <- data.frame(points[[1]])
+  plotdata$Type <- vlookup(lookup_value = rownames(plotdata),
+                                  dict = sample_data(ps_raw_rarefied), 
+                                  lookup_column = "SampleID",
+                                  result_column = "Type")
+  FileName <-  paste(betapath,"/AllSamples_",method,"_bray.csv", sep = "")
+  write.csv(plotdata, FileName, row.names = TRUE)
+  
+  #---------排序-精修图
+
+  # 求均值
+  cent <- aggregate(cbind(x,y) ~ Type, data = plotdata, FUN = mean)
+  colnames(cent) <- c("Type","oNMDS1","oNMDS2")
+  
+  # 合并到样本坐标数据中
+  segs <- merge(plotdata, cent,
+                by.x = c("Type"),
+                by.y = c("Type"),
+                sort = FALSE)
+  
+
+  library(ggsci)
+  p4 = p3[[1]] + 
+    geom_segment(data = segs,
+                 mapping = aes(xend = oNMDS1, yend = oNMDS2,
+                               color = Type),show.legend=F) +
+    geom_point(mapping = aes(x = oNMDS1, y = oNMDS2),
+               data = segs, size = 5,pch = 24,
+               color = "black",fill = "white") +
+    scale_fill_manual(values = colset1)+
+    scale_color_manual(values = colset1,guide = F) + 
+    mytheme1 + 
+    theme(legend.position = c(0.2,0.2))
+  p4
+  
+  FileName <- paste(betapath,"/AllSamples_",method,"bray_star.pdf", sep = "")
+  ggsave(FileName, p4, width = 8, height = 8)
+  FileName1 <- paste(betapath,"/AllSamples_",method,"bray_star.jpg", sep = "")
+  ggsave(FileName1 , p4, width = 8, height = 8)
+
+```
+
+
+## D - Species Composition Stack Bar Diagrams
+```{r}
+library(ggalluvial)
+
+group  = "Subtype"
+j = "Phylum"
+label = FALSE 
+sd = FALSE
+Top = 10
+tran = TRUE
+
+# axis_order = NA
+
+
+  # psdata = ps %>%
+  #   tax_glom(taxrank = j)
+  psdata <- ggClusterNet::tax_glom_wt(ps = ps_raw, ranks = j)
+  
+  # transform to relative abundance
+  if (tran == TRUE) {
+    psdata = psdata %>%
+      phyloseq::transform_sample_counts(function(x) {x/sum(x)} )
+  }
+  
+  otu = phyloseq::otu_table(psdata)
+  tax = phyloseq::tax_table(psdata)
+  
+  for (i in 1:dim(tax)[1]) {
+    if (row.names(tax)[i] %in% names(sort(rowSums(otu), 
+                                          decreasing = TRUE)[1:Top])) {
+      
+      tax[i,j] = tax[i,j]
+    } else {
+      tax[i,j] = "others"
+    }
+  }
+  
+  phyloseq::tax_table(psdata) = tax
+  
+  Taxonomies <- psdata %>% # Transform to rel. abundance
+    phyloseq::psmelt()
+
+  Taxonomies$Abundance = Taxonomies$Abundance * 100
+  # Taxonomies$Abundance = Taxonomies$Abundance /rep
+  colnames(Taxonomies) <- gsub(j,"aa",colnames(Taxonomies))
+  data = c()
+  i = 2
+  for (i in 1:length(unique(phyloseq::sample_data(ps_raw)$Subtype))) {
+    a <- as.data.frame(table(phyloseq::sample_data(ps_raw)$Subtype))[i,1]
+
+    b =  as.data.frame(table(phyloseq::sample_data(ps_raw)$Subtype))[i,2]
+
+    c <- Taxonomies %>% 
+      dplyr::filter(Subtype == a)
+    c$Abundance <- c$Abundance/b
+    data = data.frame(Sample = c$Sample, Abundance = c$Abundance, Taxon = c$aa, Subtype = c$Subtype)
+
+    if (i == 1) {
+      table = data
+    }
+    if (i != 1) {
+      table = rbind(table,data)
+    }
+
+  }
+
+  Taxonomies = table
+
+  #按照分组求均值
+
+  by_cyl <- dplyr::group_by(Taxonomies, Taxon, Subtype)
+
+  zhnagxu2 = dplyr::summarise(by_cyl, sum(Abundance), sd(Abundance))
+
+  iris_groups <- dplyr::group_by(Taxonomies, Taxon)
+  cc <- dplyr::summarise(iris_groups, sum(Abundance))
+  head(cc)
+  colnames(cc)= c("Taxon", "allsum")
+  cc <- dplyr::arrange(cc, desc(allsum))
+  
+  ##使用这个属的因子对下面数据进行排序
+  head(zhnagxu2)
+  colnames(zhnagxu2) <- c("Taxon", "Subtype", "Abundance", "sd")
+  zhnagxu2$Taxon = factor(zhnagxu2$Taxon, order = TRUE, levels = cc$Taxon)
+
+  zhnagxu3 = zhnagxu2
+  
+  ##制作标签坐标，标签位于顶端
+  # Taxonomies_x = ddply(zhnagxu3,"group", summarize, label_y = cumsum(Abundance))
+  # head(Taxonomies_x )
+  #标签位于中部
+  # Taxonomies_x1 = ddply(zhnagxu3,"group", transform, label_y = cumsum(Abundance) - 0.5*Abundance)
+  Taxonomies_x = plyr::ddply(zhnagxu3, "Subtype", summarize,
+                             label_sd = cumsum(Abundance),
+                             label_y = cumsum(Abundance) - 0.5*Abundance)
+  head(Taxonomies_x)
+  
+  # Taxonomies_x$label_y =
+  Taxonomies_x = cbind(as.data.frame(zhnagxu3),
+                       as.data.frame(Taxonomies_x)[,-1])
+
+  Taxonomies_x$label = Taxonomies_x$Taxon
+  # #使用循环将堆叠柱状图柱子比较窄的别写标签，仅仅宽柱子写上标签
+  # for(i in 1:nrow(Taxonomies_x)){
+  #   if(Taxonomies_x[i,3] > 3){
+  #     Taxonomies_x[i,5] = Taxonomies_x[i,5]
+  #   }else{
+  #     Taxonomies_x[i,5] = NA
+  #   }
+  # }
+
+  Taxonomies_x$Taxon = factor(Taxonomies_x$Taxon, order = TRUE,
+                              levels = c(as.character(cc$Taxon)))
+  
+  ##普通柱状图
+  
+  p5 <- ggplot(Taxonomies_x , aes(x =  Subtype, y = Abundance, fill = Taxon, order = Taxon)) +
+    geom_bar(stat = "identity", width = 0.5, color = "black") +
+    # scale_fill_manual(values = colors) +
+    theme(axis.title.x = element_blank()) +
+    theme(legend.text=element_text(size=6)) +
+    scale_y_continuous(name = "Relative abundance (%)") +
+    guides(fill = guide_legend(title = j)) +
+    labs(x="",y="Relative abundance (%)",
+         title= "")
+  # paste("Top ",Top," ",j,sep = "")
+  p5
+
+    # p5 = p5 + scale_x_discrete(limits = axis_order)
+
+  
+  
+  if (sd == TRUE) {
+    p5 =  p5 +
+      geom_errorbar(aes(ymin=label_sd-sd, ymax=label_sd +sd), width=.2)
+  }
+  
+  if (label == TRUE) {
+    p5 = p5 +
+      geom_text(aes(label = label), size = 3, position = position_stack(vjust = 0.5))
+      # geom_text(aes(y = label_y, label = label ))
+  }
+  
+  map = as.data.frame(phyloseq::sample_data(ps_raw))
+  
+  if (length(unique(map$Subtype))>3){p5 = p5 + theme(axis.text.x=element_text(angle=45,vjust=1, hjust=1))}
+  
+  #-------------冲击图
+  cs = Taxonomies_x$Taxon
+  
+  lengthfactor <- cs %>%
+    levels() %>%
+    length()
+  cs4 <- cs %>%
+    as.factor() %>%
+    summary()  %>%
+    as.data.frame()
+  cs4$id = row.names(cs4)
+  
+  #对因子进行排序
+  df_arrange <- dplyr::arrange(cs4, id)
+  #对Taxonomies_x 对应的列进行排序
+  Taxonomies_x1 <- dplyr::arrange(Taxonomies_x, Taxon)
+  head(Taxonomies_x1)
+  #构建flow的映射列Taxonomies_x
+  Taxonomies_x1$ID = factor(rep(c(1:lengthfactor), cs4$.))
+  
+  #colour = "black",size = 2,,aes(color = "black",size = 0.8)
+  head(Taxonomies_x1)
+  Taxonomies_x1$Abundance
+  
+  p6 <- ggplot(Taxonomies_x1, aes(x = Subtype, y = Abundance,
+                                  fill = Taxon, alluvium = Taxon,
+                                  stratum = ID)) +
+    ggalluvial::geom_flow(aes(fill = Taxon, colour = Taxon),
+              stat = "alluvium", lode.guidance = "rightleft",
+              color = "black", size = 0.2, width = 0.35, alpha = 0.2)  +
+    geom_bar(width = 0.45, stat = "identity") +
+    labs(x="", y="Relative abundance (%)",
+         title= "") +
+    guides(fill = guide_legend(title = j), color = FALSE) +
+    scale_y_continuous(expand = c(0,0))
+  p6
+  
+  # flower plot
+  p7 <- ggplot(Taxonomies_x1,
+               aes(x = Subtype, alluvium = Taxon, y = Abundance)) +
+    ggalluvial::geom_flow(aes(fill = Taxon, colour = Taxon), width = 0)  +
+    labs(x="", y="Relative abundance (%)",
+         title="") +
+    guides(fill = guide_legend(title = j),color = FALSE) +
+    scale_y_continuous(expand = c(0,0))
+  
+
+    # p1 = p1 + scale_x_discrete(limits = axis_order)
+    # p6 = p6 + scale_x_discrete(limits = axis_order)
+    
+  
+  # p6
+  if (label == TRUE) {
+    # p1 = p1 +
+    #   geom_text(aes(y = label_y, label = label ))
+    p6 = p6 +
+    # geom_text(aes(y = label_y, label = label ))
+      geom_text(aes(label = label), size = 3, position = position_stack(vjust = 0.5))
+  }
+  
+  if (sd == TRUE) {
+    # p1 =  p1 +
+    #   geom_errorbar(aes(ymin=label_sd-sd, ymax=label_sd +sd), width=.2)
+    p6 =  p6 +
+      geom_errorbar(aes(ymin=label_sd-sd, ymax=label_sd +sd), width=0.2)
+  }
+  
+  if (length(unique(map$Subtype))>3){	p6=p6+theme(axis.text.x=element_text(angle=45,vjust=1, hjust=1))}
+  
+  # return(list(p4,Taxonomies,p3,p1))
+
+
+barpath = paste(otupath,"/Microbial_composition", sep = "")
+dir.create(barpath)
+
+phyloseq::rank_names(ps_raw)
+
+
+
+  p7_1 <- p7 + 
+    # scale_fill_brewer(palette = "Paired") + 
+    # scale_fill_manual(values = colset3) +
+    # scale_x_discrete(limits = axis_order) +
+    mytheme1 +
+    theme(text = element_text(size=12, face="bold"))
+    
+
+    if (length(unique(map$Subtype))>3){	p7_1=p7_1+theme(axis.text.x=element_text(angle=45,vjust=1, hjust=1))}
+  
+  p7_1
+
+  p7_2  <- p6 + 
+    # scale_fill_brewer(palette = "Paired") + 
+    # scale_fill_manual(values = colset3) +
+    # scale_x_discrete(limits = axis_order) + 
+    mytheme1 +
+    theme(text = element_text(size=12, face="bold"))
+  
+  if (length(unique(map$Subtype))>3){	p7_2=p7_2+theme(axis.text.x=element_text(angle=45,vjust=1, hjust=1))}
+  
+  p7_2
+  
+  databar <- Taxonomies
+  gnum <- length(unique(sample_data(ps_raw)$Subtype))
+  
+  FileName1 <- paste(dir_output_fig, "/",
+                     outputPrefix, 
+                     "AllSamples_", j, "_barflow", ".pdf", sep = "")
+  ggsave(FileName1, p7_2, width = (5 + gnum), height = 8 )
+  FileName2 <- paste(dir_output_fig, "/",
+                     outputPrefix, 
+                     "AllSamples_", j, "_barflow", ".png", sep = "")
+  ggsave(FileName2, p7_2, width = (5 + gnum), height =  8 )
+  
+  FileName1 <- paste(barpath,"/AllSamples_",j,"_bar",".pdf", sep = "")
+  ggsave(FileName1, p7_1, width = (5+ gnum), height =8 )
+  FileName2 <- paste(barpath,"/AllSamples_",j,"_bar",".png", sep = "")
+  ggsave(FileName2, p7_1, width = (5+ gnum), height = 8 )
+  
+  FileName <- paste(barpath,"/AllSamples_",j,"_bar_data",".csv", sep = "")
+  write.csv(databar, FileName, row.names = FALSE)
+
+
+detach("package:ggalluvial")
+
+```
+
+## E - Core Microbiome Venn Upsets
+
+```{r}
+Venpath = paste(otupath,"/SharedCore_Ven_Upset", sep = "")
+dir.create(Venpath)
+  
+# Step 1 - Install Packages
+    #install.packages("eulerr") # If not installed
+    library(eulerr)
+    library(microbiome)
+    #devtools::install_github('microsud/microbiomeutilities')
+    library(microbiomeutilities)
+    
+# Step 2 - Simple way to count number of samples in each group
+    table(meta(ps_pruned)$SpeciesType, useNA = "always")
+    
+    # convert to relative abundances
+    pseq.rel <- ps_pruned_rarefied_rela
+    # pseq.rel <- microbiome::transform(ps_pruned_rarefied_rela, "compositional")
+    
+    # Make a list of categories
+      #categories <- unique(as.character(meta(pseq.rel)$SpeciesType))
+      #print(categories)
+      list_regions <- list("Acanthurus triostegus GUT" = sort(unique(as.character(meta(subset_samples(pseq.rel, SpeciesType %in% c("Acanthurus triostegus GUT")))$Region))),
+                            "Zanclus cornutus GUT" = sort(unique(as.character(meta(subset_samples(pseq.rel, SpeciesType %in% c("Zanclus cornutus GUT")))$Region))),
+                            "Acanthurus triostegus MUC" = sort(unique(as.character(meta(subset_samples(pseq.rel, SpeciesType %in% c("Acanthurus triostegus MUC")))$Region))),
+                            "Zanclus cornutus MUC" = sort(unique(as.character(meta(subset_samples(pseq.rel, SpeciesType %in% c("Zanclus cornutus MUC")))$Region))))
+
+
+    
+    # format names
+    pseq.rel.f <- format_to_besthit(pseq.rel)
+    # check names
+    #taxa_names(pseq.Acan.GT.rel.f)[1:5]
+
+    # Write a for loop to go through each of the disease_states one by one and combine identified core taxa into a list.
+    
+    list_core <- list("Acanthurus triostegus GUT" = list(),
+                      "Zanclus cornutus GUT" = list(),
+                      "Acanthurus triostegus MUC" = list(),
+                      "Zanclus cornutus MUC" = list()) # an empty object to store information
+    
+    for (j in 1:length(list_regions)) {
+      for (n in 1:length(list_regions[[j]])) {
+        print(paste0("Identifying Core Taxa for ", names(list_regions[j]), " in Region ", list_regions[[j]][n]))
+        ps.sub <- subset_samples(pseq.rel.f, SpeciesType == names(list_regions[j]) & Region == list_regions[[j]][n]) # Subset phyloseq for the chosen microbiome and region
+        core_m <- core_members(ps.sub, # ps.sub is phyloseq selected with only samples from microbiome and region of choice 
+                             detection = 0.001, # 0.001 in at least 90% samples 
+                             prevalence = 0.75)
+        print(paste0("No. of core taxa for ",  names(list_regions[j]), " in Region ", list_regions[[j]][n], " : ", length(core_m))) # print core taxa identified in each DiseaseState.
+        list_core[[j]][[n]] <- core_m # add to a list core taxa for each group.
+        names(list_core[[j]])[n] <- list_regions[[j]][n]
+        #print(list_core)
+      }
+    }
+    
+    for (j in 1:length(list_regions)) {
+      ps.sub <- phyloseq::subset_samples(pseq.rel.f, SpeciesType == names(list_regions[j])) # Subset phyloseq for the chosen microbiome and region
+      core_m <- core_members(ps.sub, # ps.sub is phyloseq selected with only samples from microbiome and region of choice 
+                             detection = 0.001, # 0.001 in at least 90% samples 
+                             prevalence = 0.75)
+      list_core[j][[1]][[length(list_core[j][[1]])+1]] <- core_m
+      names(list_core[j][[1]])[length(list_core[j][[1]])] <- "All"
+    }
+    
+    library(UpSetR)
+    library(ComplexUpset)
+
+    #UpSetR::upset(fromList(list_core[1][[1]]), order.by = "freq")
+    
+    Acan_GT_CoreDF <- fromList(list_core[1][[1]])
+    Acan_GT_CoreDF_sub <- fromList(list_core[1][[1]][c("EP", "FP", "MX", "OG", "PO")])
+    
+    list_coreplot <- c()
+    
+    for (j in 1:length(list_core)) {
+      
+      CoreSetData <- UpSetR::fromList(list_core[j][[1]])
+      
+      plot_CoreSet <- ComplexUpset::upset(
+        data = CoreSetData,
+        #intersect = colnames(Acan_GT_CoreDF),
+        intersect = c("EP", "FP", "MX", "OG", "PO"),
+        width_ratio=0.2,
+        matrix=(intersection_matrix(geom=geom_point(shape='circle filled', size=3)) +
+                  scale_color_manual(values=c('EP'='goldenrod2', 'FP'='turquoise4', 'PO'='salmon3', 'MX'='lightgoldenrod','OG'='lightpink'),
+                                     guide=guide_legend(override.aes=list(shape='circle')))),
+        #group_by='sets',
+        #sort_sets = "descending",
+        #sort_intersections = "descending",
+        #sort_intersections_by = c("cardinality"),
+        queries=list(
+          #   upset_query(group='EP', color='goldenrod2'),
+          #   upset_query(group='MX', color='lightgoldenrod'),
+          #   upset_query(group='FP', color='turquoise4'),
+          #   upset_query(group='OG', color='lightpink'),
+          #   upset_query(group='PO', color='salmon3'),
+          #   # upset_query(group='Other', color='grey'),
+          #   # upset_query(group='All', color='black'),
+          upset_query(set='EP', fill='goldenrod2'),
+          upset_query(set='MX', fill='lightgoldenrod'),
+          upset_query(set='FP', fill='turquoise4'),
+          upset_query(set='OG', fill='lightpink'),
+          upset_query(set='PO', fill='salmon3'))) +
+        ggtitle(paste0(names(list_core[j])))
+      
+      list_coreplot[[j]] <- plot_CoreSet
+    }
+
+    library(cowplot)
+    
+    plot_CoreSetOverlaps <- plot_grid(list_coreplot[[1]],
+                                      list_coreplot[[2]],
+                                      list_coreplot[[3]],
+                                      list_coreplot[[4]],
+                                      align = 'vh', ncol = 2,
+                                      labels = c("A", "B", "C", "D"))
+    plot_CoreSetOverlaps
+    
+    pdf(file = paste0(Venpath, "/AllSamples_CoreMicrobiomeVenUpset.pdf"), h = 10, w = 20)
+    plot_CoreSetOverlaps
+    dev.off()
+    
+    png(file = paste0(Venpath, "/AllSamples_CoreMicrobiomeVenUpset.png"), h = 10, w = 20, units = "in", res = 300)
+    plot_CoreSetOverlaps
+    dev.off()
+
+```
+
+
+## F - Venn Diagrams
+```{r}
+# Venpath2 = paste(otupath,"/Ven_Upset_super", sep = "")
+# dir.create(Venpath)
+# 
+# group <- "SpeciesType"
+# path <- Venpath2
+# N <- 0.5
+# 
+#   
+#   aa =  ggClusterNet::vegan_otu(ps_pruned_rm2_rarefied)
+#   otu_table = as.data.frame(t(aa))
+#   count = aa
+#   countA = count
+#   
+#   sub_design <- as.data.frame(phyloseq::sample_data(ps_pruned_rm2_rarefied))
+#   
+# 
+#   #
+#   # pick_val_num <- rep/2
+#   count[count > 0] <- 1
+#   count2 = as.data.frame(count )
+#   aa = sub_design[,"SpeciesType"]
+#   colnames(aa) = "Vengroup"
+#   
+#   #-div group
+#   iris.split <- split(count2, as.factor(aa$Vengroup))
+#   #数据分组计算平均值
+#   iris.apply <- lapply(iris.split, function(x)colSums(x[]))
+#   # 组合结果
+#   iris.combine <- do.call(rbind, iris.apply)
+#   ven2 = t(iris.combine)
+#   for (i in 1:length(unique(phyloseq::sample_data(ps_pruned_rm2_rarefied)[,"SpeciesType"]))) {
+#     aa <- as.data.frame(table(phyloseq::sample_data(ps_pruned_rm2_rarefied)[,"SpeciesType"]))[i,1]
+#     bb =  as.data.frame(table(phyloseq::sample_data(ps_pruned_rm2_rarefied)[,"SpeciesType"]))[i,2]
+#     ven2[,aa] = ven2[,aa]/bb
+#   }
+#   ven2[ven2 < N]  = 0
+#   ven2[ven2 >=N]  = 1
+#   ven2 = as.data.frame(ven2)
+#   #
+#   ven3 = as.list(ven2)
+#   
+#   # ven_pick = get.venn.partitions(ven3)
+#   
+#   for (i in 1:ncol(ven2)) {
+#     
+#     
+#     ven3[[i]] <-  row.names(ven2[ven2[i] == 1,])
+#     
+#   }
+#   
+#   
+#   # Step 1 - Extract significant DEGs
+#     library(eulerr)
+#     VennDiag_Cinc <- euler(c("Lab Effect" = length(sigGenes_Cinc_NaiveAmb_v_AcclAmb),
+#                         "Naive SR" = length(sigGenes_Cinc_NaiveStr_v_NaiveAmb),
+#                         "Acclimated SR" = length(sigGenes_Cinc_AcclStr_v_AcclAmb),
+#                         "Temporal Shift in SR" = length(sigGenes_Cinc_NaiveStr_v_AcclStr),
+#                         "Lab Effect&Naive SR" = length(intersect(sigGenes_Cinc_NaiveAmb_v_AcclAmb,sigGenes_Cinc_NaiveStr_v_NaiveAmb)),
+#                         "Lab Effect&Acclimated SR" = length(intersect(sigGenes_Cinc_NaiveAmb_v_AcclAmb,sigGenes_Cinc_AcclStr_v_AcclAmb)),
+#                         "Lab Effect&Temporal Shift in SR" = length(intersect(sigGenes_Cinc_NaiveAmb_v_AcclAmb,sigGenes_Cinc_NaiveStr_v_AcclStr)),
+#                         "Lab Effect&Naive SR&Acclimated SR&Temporal Shift in SR" = length(Reduce(intersect, list(sigGenes_Cinc_NaiveAmb_v_AcclAmb,
+#                                                                                                                       sigGenes_Cinc_NaiveStr_v_NaiveAmb,
+#                                                                                                                       sigGenes_Cinc_AcclStr_v_AcclAmb,
+#                                                                                                                       sigGenes_Cinc_NaiveStr_v_AcclStr))),
+#                         "Naive SR&Acclimated SR" = length(intersect(sigGenes_Cinc_NaiveStr_v_NaiveAmb,sigGenes_Cinc_AcclStr_v_AcclAmb)),
+#                         "Naive SR&Temporal Shift in SR" = length(intersect(sigGenes_Cinc_NaiveStr_v_NaiveAmb,sigGenes_Cinc_NaiveStr_v_AcclStr)),
+#                         "Naive SR&Acclimated SR&Temporal Shift in SR" = length(Reduce(intersect, list(sigGenes_Cinc_NaiveStr_v_NaiveAmb,
+#                                                                                                            sigGenes_Cinc_AcclStr_v_AcclAmb,
+#                                                                                                            sigGenes_Cinc_NaiveStr_v_AcclStr))),
+#                         "Acclimated SR&Temporal Shift in SR" = length(intersect(sigGenes_Cinc_AcclStr_v_AcclAmb,sigGenes_Cinc_NaiveStr_v_AcclStr))))
+# 
+#     VennDiag_Cinc_plot <- plot(VennDiag_Cinc, quantities = TRUE, key = TRUE, font=3, cex=3, cex.lab=3, alpha=0.5,
+#          fill=c("grey40", "tomato2", "goldenrod1", "turquoise2"))
+#       
+#     pdf(file = paste0(outputPrefix, "_Venn_Cinc.pdf"), width = 12, height = 12)
+#     VennDiag_Cinc_plot
+#     dev.off()
+#     
+#     png(file = paste0(outputPrefix, "_Venn_Cinc.png"), width = 12, height = 12, res = 300, unit = 'in')
+#     VennDiag_Cinc_plot
+#     dev.off()
+#   
+#   
+#   if (length(names(ven3)) == 2) {
+#     filename3 = paste(path,"ven_",paste(names(ven3),sep = "",collapse="-"),".pdf",sep = "",collapse="_")
+#     pdf(file=filename3,width = 12, height = 8)
+#     a<- VennDiagram::venn.diagram(ven3,
+#                     filename=NULL,
+#                     lwd=2,#圈线粗度
+#                     lty=1, #圈线类型
+#                     fill=c('red',"blue"), #填充颜色
+#                     col=c('red',"blue"), #圈线颜色
+#                     cat.col=c('red',"blue"),#A和B的颜色
+#                     cat.cex = 4,# A和B的大小
+#                     rotation.degree = 0,#旋转角度
+#                     main = "",#主标题内容
+#                     main.cex = 2,#主标题大小
+#                     sub = "",#亚标题内容
+#                     sub.cex = 1,#亚标题字大小
+#                     cex=3,#里面交集字的大小
+#                     alpha = 0.5,#透明度
+#                     reverse=TRUE,
+#                     scaled     = FALSE)
+#     grid.draw(a)
+#     dev.off()
+#     filename33 = paste(path,"ven",".pngg",sep = "",collapse="_")
+#     jpeg(file=filename33)
+#     grid.draw(a)
+#     dev.off();
+#     
+#     
+#     
+#     
+#     
+#   } else if (length(names(ven3)) == 3) {
+#     filename3 = paste(path,"ven_",paste(names(ven3),sep = "",collapse="-"),".pdf",sep = "",collapse="_")
+#     pdf(file=filename3,width = 18, height = 15)
+#     a<- VennDiagram::venn.diagram(ven3,
+#                     filename=NULL,
+#                     lwd=2,#圈线粗度
+#                     lty=1, #圈线类型
+#                     fill=c('red',"blue","yellow"), #填充颜色
+#                     col=c('red',"blue","yellow"), #圈线颜色
+#                     cat.col=c('red',"blue","yellow"),#A和B的颜色
+#                     cat.cex = 4,# A和B的大小
+#                     rotation.degree = 0,#旋转角度
+#                     main = "",#主标题内容
+#                     main.cex = 2,#主标题大小
+#                     sub = "",#亚标题内容
+#                     sub.cex = 1,#亚标题字大小
+#                     cex=3,#里面交集字的大小
+#                     alpha = 0.5,#透明度
+#                     reverse=TRUE,
+#                     scaled     = FALSE)
+#     grid::grid.draw(a)
+#     dev.off()
+#     filename33 = paste(path,"ven",".jpg",sep = "",collapse="_")
+#     jpeg(file=filename33)
+#     grid::grid.draw(a)
+#     dev.off()
+#     grid::grid.draw(a)
+#   } else if (length(names(ven3)) == 4) {
+#     filename3 = paste(path,"ven_",paste(names(ven3),sep = "",collapse="-"),".pdf",sep = "",collapse="_")
+#     pdf(file=filename3,width = 18, height = 15)
+#     a<-VennDiagram::venn.diagram(ven3,
+#                     filename=NULL,
+#                     lwd=2,#圈线粗度
+#                     lty=1, #圈线类型
+#                     fill=c('red',"blue","yellow","#7ad2f6"), #填充颜色
+#                     col=c('red',"blue","yellow","#7ad2f6"), #圈线颜色
+#                     cat.col=c('red',"blue","yellow","#7ad2f6"),#A和B的颜色
+#                     cat.cex = 4,# A和B的大小
+#                     rotation.degree = 0,#旋转角度
+#                     main = "",#主标题内容
+#                     main.cex = 2,#主标题大小
+#                     sub = "",#亚标题内容
+#                     sub.cex = 1,#亚标题字大小
+#                     cex=3,#里面交集字的大小
+#                     alpha = 0.5,#透明度
+#                     reverse=TRUE,
+#                     scaled     = FALSE)
+#     grid::grid.draw(a)
+#     dev.off()
+#     filename33 = paste(path,"ven",".jpg",sep = "",collapse="_")
+#     jpeg(file=filename33)
+#     grid::grid.draw(a)
+#     dev.off()
+#     grid::grid.draw(a)
+#   }else if (length(names(ven3)) == 5) {
+#     filename3 = paste(path,"ven_",paste(names(ven3),sep = "",collapse="-"),".pdf",sep = "",collapse="_")
+#     pdf(file=filename3,width = 12, height = 12)
+#     a<- VennDiagram::venn.diagram(ven3,
+#                     filename=NULL,
+#                     lwd=2,#圈线粗度
+#                     lty=1, #圈线类型
+#                     fill=c('red',"blue","yellow","#7ad2f6","green"), #填充颜色
+#                     col=c('red',"blue","yellow","#7ad2f6","green"), #圈线颜色
+#                     cat.col=c('red',"blue","yellow","#7ad2f6","green"),#A和B的颜色
+#                     cat.cex = 4,# A和B的大小
+#                     rotation.degree = 0,#旋转角度
+#                     main = "",#主标题内容
+#                     main.cex = 2,#主标题大小
+#                     sub = "",#亚标题内容
+#                     sub.cex = 1,#亚标题字大小
+#                     cex=3,#里面交集字的大小
+#                     alpha = 0.5,#透明度
+#                     reverse=TRUE,
+#                     scaled     = FALSE)
+#     grid::grid.draw(a)
+#     dev.off()
+#     filename33 = paste(path,"ven",".jpg",sep = "",collapse="_")
+#     jpeg(file=filename33)
+#     grid::grid.draw(a)
+#     dev.off()
+#     grid::grid.draw(a)
+#   }else if (length(names(ven3)) == 6) {
+#     
+#     print("ven not use for more than 6")
+#   }
+```
+
+## G - Sankey Diagram
+```{r}
+# BiocManager::install("networkD3")
+# BiocManager::install("webshot")
+
+library(ggClusterNet)
+library(phyloseq)
+snapath =  paste(otupath, "/Sankey_Network", sep = "")
+dir.create(snapath)
+
+load("./Data/2-Analysis-ps_pruned_rarefied.RData")
+ps <- ps_pruned_rarefied
+# ps = readRDS("./data/dataNEW/ps_16s.rds")
+
+rank=6#参数目前不可修改
+Top=50
+snapath=snapath
+
+map = sample_data(ps) %>% as.tibble()
+otu =  ps %>% vegan_otu() %>% 
+  as.data.frame()
+  otu$SampleID = row.names(otu)
+  
+  tax = ps %>% 
+    scale_micro() %>%
+    vegan_tax() %>% 
+    as.data.frame()
+  
+  tax$taxid = row.names(tax)
+  
+  head(tax)
+  
+
+  data = map %>% as.tibble() %>%
+    inner_join(otu, by = "SampleID") %>% 
+    gather(taxa, count, starts_with("tpac_16S_v2_")) %>%
+    inner_join(tax, by = c("taxa" = "taxid") )
+  data
+  
+  
+  tax = ps %>% 
+    ggClusterNet::tax_glom_wt(ranks = rank) %>%
+    ggClusterNet::filter_OTU_ps(Top) %>%
+    subset_taxa(!genus  %in% c("Unassigned","Unknown")) %>%
+    ggClusterNet::vegan_tax() %>%
+    as.data.frame()
+  
+  head(tax)
+  dim(tax)
+  
+  id2 = c("k", "p", "c", "o", "f", "g")
+  dat = NULL
+  
+  for (i in 1:5) {
+    dat <- tax[,c(i,i+1)] %>% distinct(.keep_all = TRUE) 
+    colnames(dat) = c("source","target")
+    dat$source = paste(id2[i],dat$source,sep = "_")
+    dat$target = paste(id2[i+1],dat$target,sep = "_")
+    if (i == 1) {
+      dat2 = dat
+    }  
+    
+    dat2 = rbind(dat2, dat)
+    
+  }
+  
+  dim(dat2)
+  # dat2 = dat2 %>% distinct(.keep_all = TRUE) 
+  
+  head(dat2)
+  
+  otu = ps %>% 
+    ggClusterNet::tax_glom_wt(ranks = 6) %>%
+    ggClusterNet::scale_micro() %>%
+    ggClusterNet::filter_OTU_ps(Top) %>%
+    subset_taxa(!genus  %in% c("Unassigned","Unknown")) %>%
+    ggClusterNet::vegan_otu() %>%
+    t() %>%
+    as.data.frame()
+  
+  head(otu)
+  otutax = cbind(otu,tax)
+  
+  id = rank.names(ps)[1:6]
+  dat = NULL
+  dat3 = NULL
+  head(data)
+  
+  for (j in 1) {
+    dat = data %>% group_by(SpeciesType,!!sym(rank_names(ps)[j])) %>%
+      summarise_if(is.numeric,sum,na.rm = TRUE)
+    colnames(dat) = c("source","target","value")
+    dat$target = paste(id2[j],dat$target,sep = "_")
+    
+    if (j == 1) {
+      dat3 = dat
+    }  
+    dat3 = rbind(dat3,dat)
+  }
+  
+  
+  dat3 %>% tail()
+  tem = data.frame(target = dat3$target,value = dat3$value)
+  dat3$value = NULL
+  dat2 <- rbind(dat3, dat2)
+  
+  
+  head(otutax)
+  for (i in 1:6) {
+    dat <- otutax %>%
+      dplyr::group_by(!!sym(id[i])) %>%
+      summarise_if(is.numeric,sum,na.rm = TRUE)
+    
+    dat = data.frame(Genus = dat[,1],value =rowSums(dat[,-1]) )
+    colnames(dat) = c("target","value")
+    dat$target = paste(id2[i],dat$target,sep = "_")
+    if (i == 1) {
+      dat3 = dat
+    }  
+    
+    dat3 = rbind(dat3,dat)
+  }
+  
+  dat4 <- dat2 %>% left_join(dat3)
+  sankey = dat4
+  
+  head( sankey )
+  
+  
+  nodes <- data.frame(name = unique(c(as.character(sankey$source),as.character(sankey$target))),stringsAsFactors = FALSE)
+  nodes$ID <- 0:(nrow(nodes)-1)
+  sankey <- merge(sankey,nodes,by.x = "source",by.y = "name")
+  sankey <- merge(sankey,nodes,by.x = "target",by.y = "name")
+  colnames(sankey) <- c("X","Y","value","source","target")
+  sankey <- subset(sankey,select = c("source","target","value"))
+  nodes <- subset(nodes,select = c("name"))
+  
+  ColourScal='d3.scaleOrdinal() .range(["#E41A1C", "#377EB8", "#4DAF4A", "#984EA3", "#FF7F00", "#FFFF33", "#A65628", "#F781BF", "#999999"])'
+  
+  sankey$energy_type <- sub(' .*', '', nodes[sankey$source + 1, 'name'])
+  library(networkD3)
+  p <- sankeyNetwork(Links = sankey, Nodes = nodes,
+                     Source = "source",Target = "target",Value = "value",
+                     NodeID = "name",
+                     sinksRight=FALSE,
+                     LinkGroup = 'energy_type',
+                     colourScale= ColourScal, 
+                     # nodeWidth=40,
+                     # fontSize=13
+                     # nodePadding=20
+  )
+
+# return(list(p,sankey))
+
+dat = sankey
+
+FileName <-paste(snapath, "/Sankey_Group.csv", sep = "")
+write.csv(dat,FileName,sep = "")
+
+saveNetwork(p,paste(snapath, "/Sankey_Group.html", sep = ""))
+library(webshot)
+# webshot::install_phantomjs()
+# webshot(paste(snapath,"/sankey1.html", sep = "") ,paste(snapath,"/sankey1.png", sep = ""))
+webshot(paste(snapath, "/Sankey_Group.html", sep = "") , paste(snapath, "/Sankey_Group.pdf", sep = ""))
+
+
+```
+
+
+
+
+# 4. Visualize Data
+```{r}
+# Plot
+long <- tidyr::pivot_longer(data_Profiles_abso, -sample)
+
+library(expss)
+long$genus <- vlookup(lookup_value = long$sample,
+                     dict = metadata,
+                     result_column = "Host_Genus",
+                     lookup_column = "SymPortal_ID")
+
+long$sample_uid <- vlookup(lookup_value = long$sample,
+                     dict = metadata,
+                     result_column = "Sample_ID",
+                     lookup_column = "SymPortal_ID")
+
+long$transplant <- vlookup(lookup_value = long$sample,
+                     dict = metadata,
+                     result_column = "Transplant_Type",
+                     lookup_column = "SymPortal_ID")
+
+long$site <- vlookup(lookup_value = long$sample,
+                     dict = metadata,
+                     result_column = "Origin_Site",
+                     lookup_column = "SymPortal_ID")
+
+long$treatment <- factor(vlookup(lookup_value = long$sample,
+                     dict = metadata,
+                     result_column = "Stress_Treatment",
+                     lookup_column = "SymPortal_ID"), 
+                     levels = c("Genotype", "Genotype2", "2 Wk", "4 Mo",
+                                "Pre HS", "Post HS"))
+long$treatment2 <- as.numeric(long$treatment)
+
+long$sym <- vlookup(lookup_value = long$name,
+                     dict = metadata_Profiles,
+                     result_column = "ITS2_type_profile",
+                     lookup_column = "ITS2_type_profile_UID")
+
+long$clade <- vlookup(lookup_value = long$name,
+                     dict = metadata_Profiles,
+                     result_column = "Clade",
+                     lookup_column = "ITS2_type_profile_UID")
+long$sample_uid2 <- gsub(".*-","",long$sample_uid)
+
+
+present_sym <- names(colSums(data_Profiles_abso) > 0)[2:ncol(data_Profiles_abso)]
+present_sym <- unique(long[long$value > 0,]$sym)
+
+library(RColorBrewer)
+
+plot_1 <- ggplot(data = subset(long, 
+                               sym %in% present_sym & 
+                                 !treatment %in% c("Genotype2", "2Wk")), 
+            aes(x = reorder(sample_uid2, treatment2), 
+                y = value, fill = sym, label = value)) +
+  geom_bar(stat = 'identity', position = 'fill') +
+  facet_grid(genus ~ factor(transplant, levels=c('Genotype',
+                                                 'Back Transplant',
+                                                 'Out Transplant')),
+                            scales = "free", space = "free") +
+  xlab("Colony") +
+  ylab("Proportion") +
+  scale_fill_manual(values = c(colorRampPalette(c("#71196E","#FFFFFF" ))(20)[1:15],
+                               colorRampPalette(c("turquoise4","#FFFFFF" ))(24)[1:21],
+                               "goldenrod4",
+                               colorRampPalette(c("green","#FFFFFF" ))(8)[1],
+                               colorRampPalette(c("yellow","#FFFFFF" ))(4)[1:2])) +
+  # geom_text(position = position_stack(vjust = 0.5)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "top", 
+        panel.grid.major = element_blank(), 
+        panel.background = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        strip.background = element_blank(), 
+        legend.text = element_text(size = 8, face = 'bold'),
+        legend.direction="horizontal",
+        # axis.text.y = element_text(size=14, face="bold"),
+        # strip.text.x = element_blank(), 
+        axis.title = element_text(size=14, face="bold"))
+        
+plot_1
+
+pdf(file = paste0(res1path, "/plot_ITS2-Profiles_Barplot.pdf"), w = 20, h = 8)
+  plot_1
+dev.off()
+      
+png(file = paste0(res1path, "/plot_ITS2-Profiles_Barplot.png"),  w = 20, h = 8, units="in", res=300)
+  plot_1
+dev.off()
+
+plot_OG_POC <- ggplot(data = subset(long, 
+                                    treatment %in% c("Genotype", 
+                                                     "Genotype2", "4 Mo"),
+                                    sym %in% present_sym &
+                                    site %in% c("Opunohu") &
+                                    genus %in% c("pocillopora")), 
+            aes(x = reorder(sample_uid2, treatment2), 
+                y = value, fill = sym, label = value)) +
+  geom_bar(stat = 'identity', position = 'fill') +
+  # facet_wrap("treatment") +
+  # facet_grid(. ~ treatment, scales = "free_x", space = "free") +
+  xlab("Colony") +
+  ylab("Proportion") +
+  scale_fill_manual(values = c(colorRampPalette(c("#71196E","#FFFFFF" ))(20)[1:15],
+                               colorRampPalette(c("turquoise4","#FFFFFF" ))(24)[1:21],
+                               "goldenrod4",
+                               colorRampPalette(c("green","#FFFFFF" ))(8)[1],
+                               colorRampPalette(c("yellow","#FFFFFF" ))(4)[1:2])) +
+  # geom_text(position = position_stack(vjust = 0.5)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "top", 
+        panel.grid.major = element_blank(), 
+        panel.background = element_blank(), 
+        axis.line = element_line(colour = "black"),
+        strip.background = element_blank(), 
+        legend.text = element_text(size = 8, face = 'bold'),
+        legend.direction="horizontal",
+        # axis.text.y = element_text(size=14, face="bold"),
+        # strip.text.x = element_blank(), 
+        axis.title = element_text(size=14, face="bold"))
+```
+
+```{r}
+# LEfSe Analysis
+
+library(microeco)
+library(file2meco)
+
+# subset phyloseq to include only genotype samples (of POC)
+ps_bact_rarefied_genoPOR <- phyloseq::subset_samples(ps_bact_rarefied,
+                           Host %in% c("POR")
+                           & Transplant %in% c("Genotype"))
+
+# ps_raw_rarefied_genoPOC <- phyloseq::subset_samples(ps_raw_rarefied,
+#                            Host %in% c("POC") &
+#                              Site %in% c("Tiahura") &
+#                              Transplant %in% c("Out Transplant",
+#                                                "Back Transplant"))
+# 
+# ps_raw_rarefied_genoPOC_noorganelles <- 
+#   ps_raw_rarefied_genoPOC %>%
+#   subset_taxa(
+#     Order != "Chloroplast" &
+#     Family != "Mitochondria"
+#   )
+
+mt <- file2meco::phyloseq2meco(ps_bact_rarefied_genoPOR)
+
+# Differential Abundance Analysis between the two sites (Genotype samples only)
+  SitePair <- unique(sample_data(ps_bact_rarefied_genoPOR)$Site)
+  SitePair_short <- c("Tia", "Opu")
+  
+  data_microtab_Site <- list()
+
+  data_diffabun_Site <- list()
+  
+  plot_LDA_Site <- list()
+  
+  plot_diffabun_Site <- list()
+  
+  library(xlsx)
+  for (j in 1:length(SitePair)) {
+    # Create microtable containing subset of data for the desired species x tissue Pair
+    data_microtab_Site[[j]] <- file2meco::phyloseq2meco(
+      phyloseq::subset_samples(ps_bact_rarefied_genoPOR,
+                               Site %in% c(paste(SitePair[j]))))
+      
+    # Perform the differential abundance analysis using microeco package
+    data_diffabun_Site[[j]] <- microeco::trans_diff$new(
+      dataset = data_microtab_Site[[j]],
+      taxa_level = "all", method = "lefse", p_adjust_method = "fdr",
+      group = "Site", alpha = 0.05, lefse_subgroup = NULL)
+    
+    # Write results (relative and differential abundances) to respective tables
+    write.xlsx(data_diffabun_Site[[j]]$res_abund,
+               file = paste(dir_output_tab, "/", 
+                            outputPrefix, "Table-SX_", SitePair_short[j],
+                            "_LEfSe-Results_Genotype-Site.xlsx", sep=""),
+               sheetName="Res_RelAbund", append=TRUE, row.names = FALSE)
+    
+    write.xlsx(data_diffabun_Site[[j]]$res_diff,
+               file = paste(dir_output_tab, "/", 
+                            outputPrefix, "Table-SX_", SitePair_short[j],
+                            "_LEfSe-Results_Genotype-Site.xlsx", sep=""),
+               sheetName="Res_DiffAbund", append=TRUE, row.names = FALSE)
+  
+    # LDA BarPlot of the top 20 differentially abundant taxa (highest LDA scores) across regions
+
+    plot_LDA_Site[[j]] <- 
+      data_diffabun_Site[[j]]$plot_diff_bar(width = 0.8,
+                                           use_number = 1:40,
+                                           group_order = c("Site",
+                                                           color_values = c("grey", "darkorchid4")) +
+      ggtitle(label = paste(SitePair[j])))
+
+    ggsave(plot_LDA_Site[[j]],
+           filename = paste(dir_output_fig, "/", 
+                            outputPrefix, "Figure-SX_", SitePair_short[j],
+                            "_LEfSe-LDAScores_Genotype-Site.pdf", sep=""),
+           device = "pdf",
+           height = 15, width = 22, units = "in")
+
+    ggsave(plot_LDA_Site[[j]],
+           filename = paste(dir_output_fig, "/", 
+                            outputPrefix, "Figure-SX_", SitePair_short[j],
+                            "_LEfSe-LDAScores_Genotype-Site.png", sep=""),
+           device = "png",
+           height = 15, width = 22, units = "in", dpi = 300)
+    
+    # Relative Abundance Barplot of the top 20 differentially abundant taxa
+
+    plot_diffabun_Site[[j]] <- 
+      data_diffabun_Site[[j]]$plot_diff_abund(use_number = 1:20, 
+                                             plot_type = "barerrorbar",
+                                             errorbar_addpoint = FALSE,
+                                             coord_flip = TRUE,
+                                             errorbar_color_black = TRUE,
+                                             plot_SE = TRUE,
+                                             group_order = c("Tiahura",
+                                                             "Opunohu"),
+                                                                           color_values = c("grey", "darkorchid4")) +
+      ggtitle(label = paste(SppTissPair[j])) +
+      theme(plot.caption = element_text(hjust = 0.5),
+            axis.text.x = element_text(size = 30),
+            axis.text.y = element_text(size = 30),
+            text = element_text(size = 30),
+            #axis.text=element_text(size=50),
+            axis.title=element_text(size=12, face="bold"))
+
+    ggsave(plot_diffabun_Site[[j]],
+           filename = paste(dir_output_fig, "/", 
+                            outputPrefix, "Figure-SX_", SitePair_short[j],
+                            "_LEfSe-DiffAbund_Genotype-Site.pdf", sep=""),
+           device = "pdf",
+           height = 15, width = 22, units = "in")
+
+    ggsave(plot_diffabun_Site[[j]],
+           filename = paste(dir_output_fig, "/", 
+                            outputPrefix, "Figure-SX_", SitePair_short[j],
+                            "_LEfSe-DiffAbund_Genotype-Site.png", sep=""),
+           device = "png",
+           height = 15, width = 22, units = "in", dpi = 300)
+  }
+
+
+t1 <- microeco::trans_diff$new(dataset = mt, 
+                               taxa_level = "all", #'all
+                               method = "lefse", 
+                               group = "Site", alpha = 0.05, 
+                               lefse_subgroup = NULL, 
+                               p_adjust_method = "none")
+
+t1$res_diff
+t1$plot_diff_bar(threshold = 4)
+# we show 20 taxa with the highest LDA (log10)
+test <- t1$plot_diff_bar(use_number = 1:20, width = 0.8,
+                 color_values = c("goldenrod4","turquoise4")) +
+  labs(caption = str_wrap(
+  "Linear Discriminant Analysis (LDA) Effect Size (LEfSe) plot 
+  showing microbial taxa relative abundances in reef fish 
+  speceis x tissue groups. Lefse (P <= 0.05 and LDA threshold = 4) 
+  shows that gut microbiomes of A. triostegus and Z. cornutus fish 
+  were enriched in XXX and XXX taxa, respectively, whereas mucosal 
+  tissues of these species were enriched in XXX and XXX bacterial 
+  species, respectively. Horizontal bars represent the effect sizes
+  for the top 20 microbial taxa (i.e., those with the highest LDA scores). 
+  The length of each bar represents the log10 transformed LDA score.
+  Colored bars indicate taxa which are more abundant in the corresponding 
+  species x tissue group, respectively.", 100)) +
+  theme(plot.caption = element_text(hjust = 0.5),
+            axis.text.x = element_text(size = 30),
+            axis.text.y = element_text(size = 30),
+            text = element_text(size = 30),
+            #axis.text=element_text(size=50),
+            axis.title=element_text(size=12, face="bold"))
+
+   ggsave(test,
+           filename = paste(data_outpath, "Figures/", 
+                            outputPrefix, "Figure-SX_POC", #SppTissPair_short[j],
+                            "_LEfSe-LDAScores_GenotypexSite.pdf", sep=""),
+           device = "pdf",
+           height = 15, width = 22, units = "in")
+
+    ggsave(test,
+           filename = paste(data_outpath, "Figures/", 
+                            outputPrefix, "Figure-SX_POC", #SppTissPair_short[j],
+                            "_LEfSe-LDAScores_GenotypexSite.png", sep=""),
+           device = "png",
+           height = 15, width = 22, units = "in", dpi = 300)
+
+# t1$plot_diff_abund(use_number = 1:20)
+# t1$plot_diff_abund(fill = "SpeciesType", alpha = 0.5, add_sig = FALSE)
+# t1$plot_diff_abund(coord_flip = FALSE)
+# t1$plot_diff_abund(plot_type = "errorbar")
+t1$plot_diff_abund(plot_type = "barerrorbar", errorbar_addpoint = FALSE, coord_flip = TRUE, errorbar_color_black = TRUE, plot_SE = TRUE)
+# t1$plot_diff_abund(plot_type = "barerrorbar", errorbar_addpoint = FALSE, errorbar_color_black = TRUE, plot_SE = TRUE)
+# t1$plot_diff_abund(plot_type = "ggviolin", coord_flip = FALSE)
+
+test <- t1$plot_diff_cladogram(use_taxa_num = 200, 
+                       use_feature_num = 50, 
+                       clade_label_level = 5,
+                       color = c("goldenrod4", "turquoise4"))
+# Taxonomic representation of statistically and biologically consistent differences 
+# between samples. Differences are represented in the color of the most abundant class 
+# (white non-significant). Each circle's diameter is proportional to the 
+# taxon's abundance.
+
+
+
+t2$plot_diff_bar(threshold = 4)
+# we show 20 taxa with the highest LDA (log10)
+# https://www.researchgate.net/figure/Linear-Discriminant-Analysis-LDA-Effect-Size-LEfSe-plot-showing-species-relative_fig3_350826697
+# https://twbattaglia.gitbooks.io/introduction-to-qiime/content/lefse.html
+library(tidyverse)
+plot_LEFSe_Zanc_GUT <- t2$plot_diff_bar(use_number = 1:20, width = 0.8,
+                                        color_values = c("darkorchid4", "grey")) +
+  labs(caption = str_wrap("Linear Discriminant Analysis (LDA) Effect Size (LEfSe) plot showing relative abundances of microbial taxa witin the gut tissue of immature and mature Z. cornutus fish. 
+       Lefse (P <= 0.05 and LDA threshold = 4) shows that gut bacteria of immature fish were enriched in Fusobacteriota
+       species whereas guts of mature were enriched in Archae and bacterial species from several phyla including Verrumicrobiota, Spirochaetota, and Desulfobacterota. Horizontal bars represent the effect sizes
+       for the top 20 microbial taxa (i.e., those with the highest LDA scores). The length of each bar represents the log10 transformed LDA score. Purple and grey bars indicate taxa which are more abundant in mature and immature fish, respectively.", 100)) +
+  theme(plot.caption = element_text(hjust = 0.5),
+        axis.text.x = element_text(size = 30),
+        axis.text.y = element_text(size = 30),
+        text = element_text(size = 30),
+        #axis.text=element_text(size=50),
+        axis.title=element_text(size=20, face="bold"))
+
+setwd("C:/Users/uax75/OneDrive/Documents/R/TaraFish_2020/16SrRNA_MicrobeCommunity/Analysis2024/")
+
+pdf(file = paste0(alppath, "_LEFSe_Zanc-GUT-Rare-Sex.pdf"), 
+    h = 15, w = 22)
+plot_LEFSe_Zanc_GUT
+dev.off()
+
+png(file = paste0(alppath, "_LEFSe_Zanc-GUT-Rare-Sex.png"), 
+    h = 15, w = 22, units = "in", res = 300)
+plot_LEFSe_Zanc_GUT
+dev.off()
+  
+plot_LEFSe_Abund_Zanc_GUT <- t2$plot_diff_abund(plot_type = "barerrorbar", errorbar_addpoint = FALSE, 
+                   coord_flip = TRUE, errorbar_color_black = TRUE, plot_SE = TRUE,
+                   color_values = c("darkorchid4", "grey")) +
+  theme(plot.caption = element_text(hjust = 0.5),
+        axis.text.x = element_text(size = 30),
+        axis.text.y = element_text(size = 30),
+        text = element_text(size = 30),
+        #axis.text=element_text(size=50),
+        axis.title=element_text(size=20, face="bold"))
+
+pdf(file = paste0(alppath, "_LEFSe-Abund_Zanc-GUT-Rare-Sex.pdf"), 
+    h = 15, w = 22)
+plot_LEFSe_Abund_Zanc_GUT
+dev.off()
+
+png(file = paste0(alppath, "_LEFSe-Abund_Zanc-GUT-Rare-Sex.png"), 
+    h = 15, w = 22, units = "in", res = 300)
+plot_LEFSe_Abund_Zanc_GUT
+dev.off()
+
+plot_LEFSe_Clade_Zanc_GUT <- t2$plot_diff_cladogram(use_taxa_num = 200,
+                       use_feature_num = 50, 
+                       clade_label_level = 5,
+                       color = c("darkorchid4", "grey"),
+                       select_show_labels = NULL) +
+  theme(plot.caption = element_text(hjust = 0.5),
+        axis.text.x = element_text(size = 30),
+        axis.text.y = element_text(size = 30),
+        text = element_text(size = 30),
+        #axis.text=element_text(size=50),
+        axis.title=element_text(size=20, face="bold"))
+
+pdf(file = paste0(alppath, "_LEFSe-Clade_Zanc-GUT-Rare-Sex.pdf"), 
+    h = 15, w = 22)
+plot_LEFSe_Clade_Zanc_GUT
+dev.off()
+
+png(file = paste0(alppath, "_LEFSe-Clade_Zanc-GUT-Rare-Sex.png"), 
+    h = 15, w = 22, units = "in", res = 300)
+plot_LEFSe_Clade_Zanc_GUT
+dev.off()
+
+test <- data_diffabun_Region[[1]]$plot_diff_cladogram(use_taxa_num = 200, 
+                       use_feature_num = 40, 
+                       clade_label_level = 5,
+                       group_order = c("PO", "OG", "FP", "EP", "MX"),
+                       color = c("salmon3","lightpink","turquoise4",
+                                        "goldenrod2","lightgoldenrod"))
+ggsave(test,
+           filename = paste(data_outpath, "Figures/", "Figure-SX_", SppTissPair_short[1],
+                            "_LEfSe-Clade_SppXTis-Region.pdf", sep=""),
+           device = "pdf",
+           height = 15, width = 22, units = "in")
+
+    ggsave(test,
+           filename = paste(data_outpath, "Figures/", "Figure-SX_", SppTissPair_short[1],
+                            "_LEfSe-Clade_SppXTis-Region.png", sep=""),
+           device = "png",
+           height = 15, width = 22, units = "in", dpi = 300)
+```
+
+
+# MOVE TO PART 2-ANALYSIS !
+```{r}
+# # generate ordination and plot
+# ord_nmds <- ordinate(ps_raw_sub, "NMDS", "bray")
+# p1 <- plot_ordination(ps_raw_sub, ord_nmds, "samples", label="SampleID", color="Subtype") + theme_minimal()
+
+ps_raw_sub_rarefied_clr <- microbiome::transform(ps_raw_sub_rarefied, 
+                                                 transform = "clr")
+ps_raw_sub_rarefied_hell <- microbiome::transform(ps_raw_sub_rarefied, 
+                                                  transform = "hellinger")
+
+ordination2 <- ordinate(ps_raw_sub_rarefied, "NMDS", "bray")
+p2 <- plot_ordination(ps_raw_sub_rarefied, ordination2, 
+                     type="sample", color="Subtype", 
+                     title="NMDS - Bray-Curtis") + theme_bw()
+plot_NMDS <- p2 + 
+  stat_ellipse(geom = "polygon", type="norm", alpha=0.4, aes(fill=Subtype)) +
+  #geom_point(aes(shape="Site")) +
+  scale_color_manual(name = "", values = c("coral","tomato4",
+                                           "turquoise","turquoise4",
+                                           "goldenrod"),
+                       labels = c("Coral - Pocillopora", "Coral - Porites",
+                                  "Seawater - 0.2  µm", "Seawater - 3  µm",
+                                  "Sediment")) +
+  scale_fill_manual(name = "", values = c("coral","tomato4",
+                                           "turquoise","turquoise4",
+                                           "goldenrod"),
+                       labels = c("Coral - Pocillopora", "Coral - Porites",
+                                  "Seawater - 0.2  µm", "Seawater - 3  µm",
+                                  "Sediment"))
+plot_NDMS + mytheme1
+
+outputPrefix <- "2-Analysis-"
+
+result_path <- paste("./Results_and_Plots",sep = "")
+fs::dir_create(result_path)
+
+res1path <- paste(result_path,"/Base_Diversity_ITS2",sep = "")
+fs::dir_create(res1path)
+
+res2path <- paste(result_path,"/Base_Diversity_16S",sep = "")
+fs::dir_create(res2path)
+
+itspath <- paste(res1path,"/SymPortal",sep = "")
+dir.create(itspath)
+
+otupath <- paste(res2path,"/metaB_16S",sep = "")
+dir.create(otupath)
+
+betapath = paste(otupath, "/Beta", sep = "")
+dir.create(betapath)
+method = "NMDS"
+FileName <- paste(betapath,"/AllSamples_",method,"_bray.pdf", sep = "")
+ggsave(FileName, plot_NMDS, width = 8, height = 8)
+FileName1 <- paste(betapath,"/AllSamples_",method,"_bray.png", sep = "")
+ggsave(FileName1 , plot_NMDS, width = 12, height = 12)
+
+sample_data(ps_raw_sub_rarefied)$SiteTransTreat <-
+  paste(sample_data(ps_raw_sub_rarefied)$Site,
+        sample_data(ps_raw_sub_rarefied)$Transplant,
+        sample_data(ps_raw_sub_rarefied)$Treatment, sep=" ")
+ps_test <-subset_samples(ps_raw_sub_rarefied,
+                              Subtype %in% c("Coral POR") &
+                              Treatment %in% c("Genotype", "Pre-HS", "Post-HS"))
+ordination <- ordinate(ps_test,
+                       "NMDS", "bray")
+p1 = plot_ordination(ps_test, ordination, type="sample", 
+                     color="SiteTransTreat", title="NMDS - Bray-Curtis") + 
+  theme_bw() +
+  scale_color_manual(name = "", values = c("grey","tomato4","turquoise4","grey20",
+                                           "grey30","coral","turquoise"))
+p1 + stat_ellipse(geom = "polygon", type="norm", alpha=0.4, aes(fill=SiteTransplant))
+
+
+
+library(ggforce)
+library(dplyr)
+library(ggplot2)
+library(emmeans)
+library(multcomp)
+library(tidyr)
+library(rcompanion)
+library(multcompView)
+library(stringr)
+
+# Boxplot 1 - Alpha Diversity by SpeciesType
+  plot_AlphaDiv_SppSiteTreat <- 
+    plot_richness(subset_samples(ps_raw, Host %in% c("POR", "POC")),
+                                 x="Treatment", 
+                                 measures=c("Shannon"), color="Transplant") +
+    # annotate("text", x = 0.8, y = 5, label = "a", color = "black", size = 8) +
+    # annotate("text", x = 1.2, y = 5.6, label = "b", color = "black", size = 8) +
+    # annotate("text", x = 1.8, y = 5.6, label = "c", color = "black", size = 8) +
+    # annotate("text", x = 2.2, y = 5.6, label = "c", color = "black", size = 8) +
+    # new_scale_color() +
+    geom_sina(# aes(color=sample_data(ps)$Type), 
+              alpha = 0.5, show.legend = FALSE) +
+    geom_violin(#color=sample_data(ps_pruned)$Type),
+              lwd = 0.9, alpha = 0.4, aes(fill=NULL)) +
+    geom_boxplot(# aes(color=sample_data(ps_pruned)$Type), 
+                 outlier.shape = NA, width = 0.1,
+                 position = position_dodge(0.9),
+                 show.legend = FALSE) +
+    facet_grid(Site~Host, scales="free_x") +
+    # annotate("text", x = 0.8, y = 4.7, 
+    #          label = paste0("n = ",
+    #                         ncol(subset_samples(ps_pruned, 
+    #                                             Species=="Acanthurus triostegus" 
+    #                                             & Type=="GUT")@otu_table)), 
+    #          size = 6) +
+    # annotate("text", x = 1.2, y = 5.3, 
+    #          label = paste0("n = ",
+    #                         ncol(subset_samples(ps_pruned, 
+    #                                             Species=="Acanthurus triostegus" 
+    #                                             & Type=="MUC")@otu_table)), 
+    #          size = 6) +
+    # annotate("text", x = 1.8, y = 5.3, 
+    #          label = paste0("n = ",
+    #                         ncol(subset_samples(ps_pruned, 
+    #                                             Species=="Zanclus cornutus" 
+    #                                             & Type=="GUT")@otu_table)), 
+    #          size = 6) +
+    # annotate("text", x = 2.2, y = 5.3, 
+    #          label = paste0("n = ",
+    #                         ncol(subset_samples(ps_pruned, 
+    #                                             Species=="Zanclus cornutus" 
+    #                                             & Type=="MUC")@otu_table)), 
+    #          size = 6) +
+    # scale_color_manual(name = "",
+    #                   labels = c("Gut", "Mucus"),
+    #                   values = c("grey10", "grey80")) +
+    xlab("") +
+    # scale_y_continuous(limits=c(0,6), expand = c(0,0),
+    #                    breaks = seq(from = 0, to = 6, by = 1),
+    #                    labels = seq(from = 0, to = 6, by = 1)) +
+    # scale_x_discrete(labels = c("Acanthurus triostegus", "Zanclus cornutus")) +
+    ylab("Shannon Index") +
+    guides(fill = "none") +
+    theme_bw() +
+    theme(panel.grid.major = element_blank(), 
+          panel.grid.minor = element_blank(), 
+          # legend.position = 'top',
+          panel.background = element_blank(), 
+          axis.line = element_line(colour = "black"),
+          strip.background = element_blank(), 
+          legend.text = element_text(size = 12, face = 'bold'),
+          legend.position=c(0.5, 1),
+          legend.direction="horizontal",
+          axis.text.x = element_text(size=14, face="bold.italic"),
+          axis.text.y = element_text(size=14, face="bold"),
+          strip.text.x = element_blank(), 
+          axis.title = element_text(size=14, face="bold"))
+        
+  plot_AlphaDiv_SppSiteTreat$layers <- plot_AlphaDiv_SppSiteTreat$layers[-1]
+
+
+
+# sample_data(ps)$SiteTreat <- paste(sample_data(ps)$Site,
+#                                    sample_data(ps)$Treatment, sep=".")
+# top20 <- names(sort(taxa_sums(ps), decreasing=TRUE))[1:20]
+# ps.top20 <- transform_sample_counts(ps, function(OTU) OTU/sum(OTU))
+# ps.top20 <- prune_taxa(top20, ps.top20)
+# plot_bar(subset_taxa(subset_samples(ps.top20, 
+#                                     Host %in% c("POR", "POC")), !is.na(Family)), 
+#               x="SiteTreat", fill="Family") + 
+#   facet_grid(Host~Transplant, scales="free")
+```
+
+# XX - Differential Abundance Analyses
+```{r}
+library(microeco)
+library(file2meco)
+
+sample_data(ps)$TypeSppSiteTransTreat <- paste(sample_data(ps)$Type,
+                                           sample_data(ps)$Host,
+                                           sample_data(ps)$Site,
+                                           sample_data(ps)$Transplant,
+                                           sample_data(ps)$Treatment, sep=".")
+sample_data(ps)$TypeSppSiteTrans <- paste(sample_data(ps)$Type,
+                                          sample_data(ps)$Host,
+                                          sample_data(ps)$Site,
+                                          sample_data(ps)$Transplant, sep=".")
+
+# data_microtab_POC_Heat <- file2meco::phyloseq2meco(
+#       phyloseq::subset_samples(ps,
+#                                #Host %in% c("POC") &
+#                                #Treatment %in% c("Pre-HS", "Post-HS", "")
+#                                ))
+# mt <- file2meco::phyloseq2meco(
+#   phyloseq::subset_samples(ps,
+#                               Host %in% c("POC") &
+#                              Treatment %in% c("4-Month")))                          
+
+
+# Comparison between sample Types (Coral vs Seawater vs Sediment)
+data_microtab_Type <- file2meco::phyloseq2meco(
+  phyloseq::subset_samples(ps_bact,
+                           #Host %in% c("POC") &
+                           Type %in% c("Coral", "Sediment", "Seawater")
+                           ))
+data_diffabun_Type <- microeco::trans_diff$new(
+  dataset = data_microtab_Type,
+  taxa_level = "all", method = "lefse", p_adjust_method = "BH",
+  group = "Type", alpha = 0.05, lefse_subgroup = NULL)
+
+plot_LDA_Type <- data_diffabun_Type$plot_diff_bar(threshold = 3.5, 
+                                                  width = 0.8,
+                                                  use_number = 1:10)
+plot_Clade_Type <- data_diffabun_Type$plot_diff_cladogram(use_taxa_num = 200,
+                                                          use_feature_num = 20,
+                                                          clade_label_level = 5)
+
+# Comparison between Sites (Genotype Samples)
+data_microtab_Site <- file2meco::phyloseq2meco(
+  phyloseq::subset_samples(ps_raw_rarefied_hell,
+                           Host %in% c("POC")
+                           # & Site %in% c("Tiahura")
+                           & Site %in% c("Opunohu")
+                           ))
+data_diffabun_Site <- microeco::trans_diff$new(
+  dataset = data_microtab_Site,
+  taxa_level = "Genus", method = "lefse", p_adjust_method = "fdr",
+  group = "Treatment", alpha = 0.05, lefse_subgroup = NULL)
+
+plot_LDA_Site <- data_diffabun_Site$plot_diff_bar(threshold = 3.5, 
+                                                  width = 0.8,
+                                                  use_number = 1:20)
+plot_LDA_Site <- data_diffabun_Site$plot_diff_abund(use_number = 1:20)
+plot_Clade_Site <- data_diffabun_Site$plot_diff_cladogram(use_taxa_num = 200,
+                                                          use_feature_num = 20,
+                                                          clade_label_level = 5,
+                                                          color = c("steelblue3",
+                                                                    "darkorange3"))
+
+FileName <- paste(betapath,"/LefSE_LDA_POC_GenotypexSite.pdf", sep = "")
+ggsave(FileName, plot_LDA_Site, width = 8, height = 8)
+FileName1 <- paste(betapath,"/LefSE_LDA_POC_GenotypexSite.pdf", sep = "")
+ggsave(FileName1 , plot_LDA_Site, width = 12, height = 12)
+
+plot_Clade_Type <- data_diffabun_Type$plot_diff_cladogram(use_taxa_num = 200,
+                                                          use_feature_num = 20,
+                                                          clade_label_level = 5)
+
+ps_test <- subset_samples(ps,
+                          !Type %in% c("Control"))
+min_samplecount = min(phyloseq::sample_sums(ps_test))
+median_samplecount = median(phyloseq::sample_sums(ps_test))
+
+if (min_samplecount == 0) {
+    print("Some samples contain zero sequences")
+    print("Median sample count used as rarefaction depth")
+    ps_pruned_rarefied_median <- phyloseq::rarefy_even_depth(ps_pruned,
+                                          rngseed = 1,
+                                          sample.size = median_samplecount,
+                                          replace = FALSE)
+    #Save rarefied data as phyloseq object
+    save(ps_pruned_rarefied_median, file = paste0("./Data/",  outputPrefix, "ps_pruned_rarefied_median.RData", sep = ""))
+  } else{
+    ps_pruned_rarefied <- phyloseq::rarefy_even_depth(ps_pruned, 
+                                           rngseed = 1,
+                                           sample.size = min_samplecount,
+                                           replace = FALSE)
+    #Save rarefied data as phyloseq object
+    save(ps_pruned_rarefied, file = paste0("./Data/",  outputPrefix, "ps_pruned_rarefied.RData", sep = ""))
+  }
+
+sample_data(ps)['sample_id'] <- row.names(sample_data(ps)) 
+# generate ordination and plot
+ps_pruned_rarefied_rela <- microbiome::transform(ps_pruned_rarefied, transform = "compositional")
+ordcap <- ordinate(ps, "NMDS", "bray", ~Type)
+plot_ordination(ps, ordcap, "samples", label="sample_id") + theme_minimal()
+```
+

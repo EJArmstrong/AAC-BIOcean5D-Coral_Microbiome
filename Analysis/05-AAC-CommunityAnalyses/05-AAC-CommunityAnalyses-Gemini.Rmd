@@ -1,0 +1,521 @@
+---
+title: "AAC - BIOcean5D Coral Microbiomes: 05 - Community Analyses"
+author: "Eric J. Armstrong, eja98@cornell.edu, @EricJ_Armstrong"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+generator: pandoc
+viewport: width=device-width, initial-scale=1
+output:
+  html_document:
+    code_folding: show
+    highlight: default
+    keep_md: true
+    theme: journal
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+      toc_depth: 3
+  pdf_document:
+    toc: true
+editor_options:
+  chunk_output_type: console
+---
+
+
+```{r 0-setup, include=FALSE}
+# Define knitr options
+knitr::opts_chunk$set(
+  collapse = TRUE, 
+  echo=TRUE,
+  comment="#>", 
+  message=FALSE,
+  warning=FALSE,
+  fig.align="center",
+  fig.width=7,
+  fig.height=5,
+  dpi=300)
+
+knitr::opts_knit$set(
+  root.dir = "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/"
+)
+
+# What time did we start running this script? 
+start_time <- Sys.time()
+```
+
+
+#### Purpose of this file  
+
+This file contains all of the code for producing a curated OTU table from the 16S microbial sequence data for the Armstrong et al. manuscript.
+
+The goal is to perform community level diversity analyses simplified across a symmetric 3-node experimental design common to both hosts.
+
+# 1 - Prepare Workspace
+Load necessary R packages and set default parameters
+
+## 1.1 - Define Paths
+```{r 1.1-define_paths}
+# a - Define the main project directory ----
+  dir_proj <- "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/"
+
+# b - Define the directory containing the input data ----
+  dir_in <- "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/Data/"
+    
+# c - Define the directories that will contain output Files/Figures/Tables ----
+  dir_out_dat <- "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/Data/05-AAC-CommunityAnalyses/"
+  dir.create(dir_out_dat, recursive = TRUE)
+  dir_out_fig <- "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/Figures/05-AAC-CommunityAnalyses/"
+  dir.create(dir_out_fig, recursive = TRUE)
+  dir_out_tab <- "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/Tables/05-AAC-CommunityAnalyses/"
+  dir.create(dir_out_tab, recursive = TRUE)
+```
+
+## 1.2 - Set Defaults
+```{r 1.2-set_defaults}
+# a - Define the output prefix for generated files ----
+  pref_out <- "05-AAC-CommunityAnalyses_"
+    
+# b - Set the random seed value ----
+  set.seed(123)
+```
+
+## 1.3 - Load Libraries
+```{r 1.3-load-lib}
+# a - load necessary packages ----
+  pacman::p_load(tidyverse, devtools, phyloseq, patchwork, vegan, 
+                 ggplot2, pairwiseAdonis, nlme, car,
+                 install = FALSE)
+```
+
+# 1.4 - Load Phyloseq Object & Implement Simplified Meta-Structure
+
+```{r 1.4-load-ps}
+# a - Load physeq ----
+  load(paste(dir_in, 
+             "03-AAC-PhylogeneticTree/", 
+             "03-AAC-PhylogeneticTree_physeq_midpointTree.RData", 
+             sep = ""))
+
+# b - Perform targeted curation: Filter genotypes, drop 2-weeks, and collapse 4-months/Pre-HS nodes ----
+  metadata_raw <- data.frame(sample_data(physeq_midpointTree)) %>%
+    mutate(SampleID_Temp = rownames(.)) %>%
+    # CRITICAL FIX: Force metadata columns to text strings to prevent factor numeric encoding bugs
+    mutate(
+      Treatment = as.character(Treatment),
+      Host = as.character(Host)
+    ) %>%
+    # 1. Drop 2-Week samples completely to establish inter-species symmetry
+    filter(Treatment != "2-Weeks") %>%
+    # 2. Handle the Pocillopora genotype duality: Drop original POC "Genotype" rows
+    filter(!(Host == "POC" & Treatment == "Genotype")) %>%
+    # 3. Rename Genotype2 to Genotype for POC so both species share identical baseline text
+    mutate(Treatment = ifelse(Host == "POC" & Treatment == "Genotype2", "Genotype", Treatment)) %>%
+    # 4. Merge simultaneous chronological samplings into a single Treatment factor node
+    mutate(Treatment = ifelse(Treatment %in% c("4-Months", "Pre-HS"), "4-Month-Pre-HS", Treatment)) %>%
+    # Convert back into an explicit factor for downstream modeling
+    mutate(Treatment = as.factor(Treatment))
+
+  # Re-apply clean metadata subset matrix back onto parent phyloseq infrastructure
+  physeq_pruned <- prune_samples(metadata_raw$SampleID_Temp, physeq_midpointTree)
+  sample_data(physeq_pruned) <- sample_data(metadata_raw)
+
+# c - Add a column to the metadata listing the full treatment condition ----
+  sample_data(physeq_pruned)$FullTreatment <- paste(
+    sample_data(physeq_pruned)$Site,
+    sample_data(physeq_pruned)$Subtype,
+    sample_data(physeq_pruned)$Transplant,
+    sample_data(physeq_pruned)$Treatment,
+    sep = " "
+  )
+
+# d - Fix the duplicate colony labels by combining Host and Colony names ----
+  metadata_clean <- as(sample_data(physeq_pruned), "data.frame") %>%
+    mutate(
+      Unique_Colony = case_when(
+        Type == "Coral" ~ paste0(Host, "_", Colony),
+        TRUE ~ "Environmental_Ref"
+      )
+    )
+
+# e - Re-assign the corrected metadata back into your workspace tree object ----
+  sample_data(physeq_pruned) <- sample_data(metadata_clean)
+  physeq_midpointTree <- physeq_pruned
+```
+
+# 2 - Explore Read Counts and Remove Low Count Samples
+
+## 2.1 - Raw read depth
+```{r 2.1-raw-read-depth}
+# a - Calculate the total number of reads per sample ---- 
+  df_raw_TotalSeqs  <- 
+    physeq_midpointTree %>%
+    sample_sums() %>%
+    data.frame()
+
+# b - name the column ----
+  colnames(df_raw_TotalSeqs)[1] <- "TotalSeqs"
+    
+  head(df_raw_TotalSeqs)
+```
+
+## 2.2 - Visualize the raw read depth
+```{r 2.2-visualize-reads}
+# a - make histogram of raw reads ----
+  df_raw_TotalSeqs %>%
+    ggplot(aes(x = TotalSeqs)) + 
+    geom_histogram(bins = 50) + 
+    scale_x_continuous(limits = c(0, 10000)) + 
+    labs(title = "Raw Sequencing Depth Distribution") + 
+    theme_classic()
+```
+
+## 2.3 - Determine Minimum Read Depth and Remove Low Sequence Samples
+```{r 2.3-rarefaction-filter}
+# a - what is the minimum number of sequences? ---- 
+  physeq_midpointTree %>%
+    sample_sums() %>%
+    min()
+
+# b - Visualize the rarefaction curves to assess coverage ----
+  if (taxa_are_rows(physeq_midpointTree)) {
+    OTU_table <- as.data.frame(t(otu_table(physeq_midpointTree)))
+  } else {
+    OTU_table <- as.data.frame(otu_table(physeq_midpointTree))
+  }
+
+  plot_rareCurves <- 
+    rarecurve(OTU_table, 
+              step = 50, 
+              col = "black", label = FALSE, main = "Rarefaction Curves")
+
+# c - Identify samples that haven't reached the asymptote ----
+  data_rareCurves <- 
+    lapply(seq_along(plot_rareCurves), 
+           function(i) {
+             x <- attr(plot_rareCurves[[i]], "Subsample")
+             y <- plot_rareCurves[[i]]
+             data.frame(Sample = rownames(OTU_table)[i], x = x, y = y)
+           })
+  df_rareCurves <- do.call(rbind, data_rareCurves)
+
+# d - Calculate the slope of the last 3 points for each curve ---
+  slope_check <- 
+    df_rareCurves %>%
+    group_by(Sample) %>%
+    filter(x >= (max(x) - 150)) %>% 
+    summarise(Slope = (dplyr::last(y) - dplyr::first(y)) / 
+                (dplyr::last(x) - dplyr::first(x)))
+
+# e - Flag samples with a slope greater than 0.05 new species per read ----
+  samples_unreachedAsymptote <- 
+    slope_check %>%
+    filter(Slope > 0.05) %>%
+    pull(Sample)
+  
+  print(samples_unreachedAsymptote)
+  
+# f - Remove low reads, outliers, and flagged non-asymptote samples ----
+  
+  # 1. First drop the low read samples
+  physeq_noLow <- prune_samples(sample_sums(physeq_midpointTree) >= 2000, physeq_midpointTree)
+  
+  # 2. Combine your manual outliers and your slope-flagged samples into one list
+  exclude_samples <- c("71-TTC04F40POR", "24-TGC04F00POR", samples_unreachedAsymptote)
+  
+  # 3. Filter out the specific outlier/unreached asymptote samples safely
+  physeq_subset <- subset_samples(physeq_noLow, !(sample_names(physeq_noLow) %in% exclude_samples))
+  
+  # 4. Remove ASVs/OTUs that now have 0 total reads across your remaining samples
+  physeq_midpointTree_curated <- prune_taxa(taxa_sums(physeq_subset) > 0, physeq_subset)
+
+  # how many samples were removed?
+  cat("Total samples removed during curation:", nsamples(physeq_midpointTree) - nsamples(physeq_midpointTree_curated), "\n")
+  
+  # what proportion of samples remain?
+  cat("Proportion of remaining high-quality samples:", nsamples(physeq_midpointTree_curated)/nsamples(physeq_midpointTree), "\n")
+```
+
+# 3 - Normalize Read Counts
+## 3.1 - Create the scale_reads function
+```{r 3.1-scale-function}
+  matround <- function(x){trunc(x+0.5)}
+  
+  scale_reads <- 
+    function(physeq, n = min(sample_sums(physeq)), round = "round") 
+      {
+      physeq.scale <- transform_sample_counts(physeq, function(x) {(n * x/sum(x))})
+      
+      if (round == "floor"){
+        otu_table(physeq.scale) <- floor(otu_table(physeq.scale))
+        } else if (round == "round"){
+          otu_table(physeq.scale) <- round(otu_table(physeq.scale))
+          } else if (round == "matround"){
+            otu_table(physeq.scale) <- matround(otu_table(physeq.scale))
+            }
+      
+      physeq.scale <- prune_taxa(taxa_sums(physeq.scale) > 0, physeq.scale)
+      return(physeq.scale)
+      }
+```
+
+## 3.2 - Scale the reads and check the distribution of the seq depth
+```{r 3.2-apply-scaling}
+# a - Scale reads across global and host-isolated environments ----
+    physeq_midpointTree_curated_scaled <- scale_reads(physeq_midpointTree_curated, round = "matround")
+
+    # Split prior to scaling to optimize within-host sequencing targeting depths
+    physeq_midpointTree_curated_POC <- subset_samples(physeq_midpointTree_curated, Host == "POC")
+    physeq_midpointTree_curated_POR <- subset_samples(physeq_midpointTree_curated, Host == "POR")
+
+    physeq_midpointTree_curated_POC_scaled <- scale_reads(physeq_midpointTree_curated_POC, round = "matround")
+    physeq_midpointTree_curated_POR_scaled <- scale_reads(physeq_midpointTree_curated_POR, round = "matround")
+
+# b - Calculate and inspect the read depth profiles ----
+    df_scaled_TotalSeqs <- data.frame(TotalSeqs = sample_sums(physeq_midpointTree_curated_scaled))
+    df_scaled_POC_TotalSeqs <- data.frame(TotalSeqs = sample_sums(physeq_midpointTree_curated_POC_scaled))
+
+df_scaled_POR_TotalSeqs <- data.frame(TotalSeqs = sample_sums(physeq_midpointTree_curated_POR_scaled))
+cat("Optimized Pocillopora sequencing depth target:", min(df_scaled_POC_TotalSeqs$TotalSeqs), "\n")
+cat("Optimized Porites sequencing depth target:", min(df_scaled_POR_TotalSeqs$TotalSeqs), "\n")
+# c - Confirm depth target range profiles flat (delta should equal zero) ----
+cat("Global comparative Target Range Delta:", max(df_scaled_TotalSeqs$TotalSeqs) - min(df_scaled_TotalSeqs$TotalSeqs), "\n")
+```
+4 - Calculate & Visualize Community Dissimilarity
+4.1 - Data Preparation
+```{r 4.1-remove-controls}
+Isolate true environmental and host biological cohorts across all workspaces
+physeq_midpointTree_curated_scaled <- subset_samples(physeq_midpointTree_curated_scaled, Group == "TrueSample")
+physeq_midpointTree_curated_POC <- subset_samples(physeq_midpointTree_curated_POC, Group == "TrueSample")
+physeq_midpointTree_curated_POR <- subset_samples(physeq_midpointTree_curated_POR, Group == "TrueSample")
+physeq_midpointTree_curated_POC_scaled <- subset_samples(physeq_midpointTree_curated_POC_scaled, Group == "TrueSample")
+physeq_midpointTree_curated_POR_scaled <- subset_samples(physeq_midpointTree_curated_POR_scaled, Group == "TrueSample")
+```
+4.2 - Ordinations & 3-Node Timeline Visualizations
+```{r 4.2-ordinations-and-plotting}
+a - Create a Function that will perform all Ordinations ----
+generate_ordinations <- function(physeq, plot_label = "Dataset") {
+soren_dist <- phyloseq::distance(physeq, method = "bray", binary = TRUE)
+soren_pcoa <- ordinate(physeq, method = "PCoA", distance = soren_dist)
+bray_pcoa  <- ordinate(physeq, method = "PCoA", distance = "bray")
+unifrac_unw_pcoa <- ordinate(physeq, method = "PCoA", distance = "unifrac")
+unifrac_w_pcoa <- ordinate(physeq, method = "PCoA", distance = "wunifrac")
+unifrac_w_nmds   <- ordinate(physeq, method = "NMDS", distance = "wunifrac")
+return(list(
+Soren_PCoA    = soren_pcoa,
+Bray_PCoA     = bray_pcoa,
+Unifrac_PCoA  = unifrac_unw_pcoa,
+WUnifrac_PCoA = unifrac_w_pcoa,
+WUnifrac_NMDS = unifrac_w_nmds
+))
+}
+b - Run the ordination functions on the 3-node datasets ----
+ords_combined <- generate_ordinations(physeq_midpointTree_curated_scaled, "Global")
+ords_POC      <- generate_ordinations(physeq_midpointTree_curated_POC_scaled, "POC")
+ords_POR      <- generate_ordinations(physeq_midpointTree_curated_POR_scaled, "POR")
+c - Define 3-Node Timeline Plotting Functions ----
+make_ordination_plots_patchwork <- function(physeq, ord_list, title_prefix) {
+p1 <- plot_ordination(physeq, ord_list$Soren_PCoA, color = "Subtype", shape = "Site") +
+geom_point(size = 3.5, alpha = 0.6) + theme_bw() + labs(title = "Sørensen (PCoA)")
+p2 <- plot_ordination(physeq, ord_list$Bray_PCoA, color = "Subtype", shape = "Site") +
+geom_point(size = 3.5, alpha = 0.6) + theme_bw() + labs(title = "Bray-Curtis (PCoA)")
+p3 <- plot_ordination(physeq, ord_list$Unifrac_PCoA, color = "Subtype", shape = "Site") +
+geom_point(size = 3.5, alpha = 0.6) + theme_bw() + labs(title = "Unweighted UniFrac (PCoA)")
+p4 <- plot_ordination(physeq, ord_list$WUnifrac_PCoA, color = "Subtype", shape = "Site") +
+geom_point(size = 3.5, alpha = 0.6) + theme_bw() + labs(title = "Weighted UniFrac (PCoA)")
+stress_val <- round(ord_list$WUnifrac_NMDS$stress, 3)
+p5 <- plot_ordination(physeq, ord_list$WUnifrac_NMDS, color = "Subtype", shape = "Site") +
+geom_point(size = 3.5, alpha = 0.6) + theme_bw() + labs(title = "Weighted UniFrac (NMDS)") +
+annotate("text", x = Inf, y = Inf, label = paste("NMDS Stress =", stress_val), hjust = 1.1, vjust = 1.5, size = 3.5, fontface = "italic")
+(p1 + p2) / (p3 + p4) / (p5 + patchwork::plot_spacer()) +
+plot_layout(guides = "collect") +
+plot_annotation(title = paste(title_prefix, "- Multiple Ordination Framework"), theme = theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5)))
+}
+make_host_trajectory_plot_patchwork <- function(physeq, ord_list, host_name) {
+# FIX: Enforce symmetric, streamlined 3-node timeline levels explicitly for tracking lines
+sample_data(physeq)$Treatment <- factor(sample_data(physeq)$Treatment, levels = c("Genotype", "4-Month-PreHS", "Post-HS"))
+p_build <- function(ord_obj, dist_title, is_nmds = FALSE) {
+p <- plot_ordination(physeq, ord_obj, color = "Site", shape = "Treatment") +
+geom_path(aes(group = Unique_Colony), color = "grey75", arrow = arrow(length = unit(0.1, "cm")), alpha = 0.5) +
+geom_point(size = 3.5, alpha = 0.7) +
+stat_ellipse(aes(group = Site), alpha = 0.2, linetype = "dashed") + theme_bw() + labs(title = dist_title)
+if(is_nmds) {
+stress_val <- round(ord_obj$stress, 3)
+p <- p + annotate("text", x = Inf, y = Inf, label = paste("NMDS Stress =", stress_val), hjust = 1.1, vjust = 1.5, size = 3.5, fontface = "italic")
+}
+return(p)
+}
+p1 <- p_build(ord_list$Soren_PCoA, "Sørensen (PCoA)")
+p2 <- p_build(ord_list$Bray_PCoA, "Bray-Curtis (PCoA)")
+p3 <- p_build(ord_list$Unifrac_PCoA, "Unweighted UniFrac (PCoA)")
+p4 <- p_build(ord_list$WUnifrac_PCoA, "Weighted UniFrac (PCoA)")
+p5 <- p_build(ord_list$WUnifrac_NMDS, "Weighted UniFrac (NMDS)", is_nmds = TRUE)
+(p1 + p2) / (p3 + p4) / (p5 + patchwork::plot_spacer()) +
+plot_layout(guides = "collect") +
+plot_annotation(
+title = paste(host_name, "- Genotype Trajectories Across Sites & Stress"),
+subtitle = "Arrows trace individual fragments across a symmetric 3-node experimental design",
+theme = theme(plot.title = element_text(size = 14, face = "bold", hjust = 0.5), plot.subtitle = element_text(size = 11, hjust = 0.5))
+)
+}
+d - Render Visualizations ----
+make_ordination_plots_patchwork(physeq_midpointTree_curated_scaled, ords_combined, "Global")
+print(make_host_trajectory_plot_patchwork(physeq_midpointTree_curated_POC_scaled, ords_POC, "Pocillopora (POC)"))
+print(make_host_trajectory_plot_patchwork(physeq_midpointTree_curated_POR_scaled, ords_POR, "Porites (POR)"))
+```
+5 - Statistical Significance Testing
+5.1 - Global Macro-PERMANOVA
+```{r 5.1-global-permanova}
+run_global_permanova_table <- function(physeq) {
+physeq_clean <- subset_samples(physeq, Group == "TrueSample")
+metadata_all <- data.frame(sample_data(physeq_clean))
+dist_list <- list(
+Sorensen = phyloseq::distance(physeq_clean, method = "bray", binary = TRUE),
+Bray_Curtis = phyloseq::distance(physeq_clean, method = "bray", binary = FALSE),
+Unweighted_UniFrac = phyloseq::distance(physeq_clean, method = "unifrac"),
+Weighted_UniFrac = phyloseq::distance(physeq_clean, method = "wunifrac")
+)
+permanova_tables <- lapply(names(dist_list), function(metric_name) {
+res <- adonis2(dist_list[[metric_name]] ~ Subtype * Site, data = metadata_all, permutations = 999, by = "terms")
+as.data.frame(res) %>%
+mutate(Metric = metric_name, Term = rownames(.)) %>%
+select(Metric, Term, Df, SumOfSqs, F, R2, Pr(>F))
+})
+bind_rows(permanova_tables) %>% filter(Term %in= c("Subtype", "Site", "Subtype:Site"))
+}
+global_results_table <- run_global_permanova_table(physeq_midpointTree_curated_scaled)
+print(global_results_table)
+```
+5.2 - Multivariate Homogeneity of Dispersions Validation
+```{r 5.2-dispersion}
+physeq_clean <- subset_samples(physeq_midpointTree_curated_scaled, Group == "TrueSample")
+metadata_all <- data.frame(sample_data(physeq_clean))
+w_unifrac_dist <- phyloseq::distance(physeq_clean, method = "wunifrac")
+disp_subtype <- betadisper(w_unifrac_dist, group = metadata_all$Subtype)
+print(permutest(disp_subtype, permutations = 999))
+disp_site <- betadisper(w_unifrac_dist, group = metadata_all$Site)
+print(permutest(disp_site, permutations = 999))
+```
+5.3 - Global Pairwise Post-Hocs
+```{r 5.3-pairwise-posthoc}
+run_pairwise_subtypes <- function(physeq) {
+physeq_clean <- subset_samples(physeq, Group == "TrueSample")
+metadata <- data.frame(sample_data(physeq_clean))
+dist_list <- list(
+Sorensen = phyloseq::distance(physeq_clean, method = "bray", binary = TRUE),
+Bray_Curtis = phyloseq::distance(physeq_clean, method = "bray", binary = FALSE),
+Unweighted_UniFrac = phyloseq::distance(physeq_clean, method = "unifrac"),
+Weighted_UniFrac = phyloseq::distance(physeq_clean, method = "wunifrac")
+)
+lapply(names(dist_list), function(metric_name) {
+res <- pairwise.adonis2(dist_list[[metric_name]] ~ Subtype, data = metadata, p.adjust.m = "fdr")
+comp_names <- names(res)[names(res) != "parent_call"]
+lapply(comp_names, function(comp) {
+df_comp <- as.data.frame(res[[comp]])
+data.frame(Metric = metric_name, Comparison = comp, R2 = df_comp$R2[1], P_adj = df_comp$Pr(>F)[1])
+}) %>% bind_rows()
+}) %>% bind_rows()
+}
+subtype_pairwise_table <- run_pairwise_subtypes(physeq_midpointTree_curated_scaled)
+print(subtype_pairwise_table %>% filter(grepl("Coral POC|Coral POR", Comparison)))
+```
+5.4 - Streamlined Genotype-Blocked Host PERMANOVAs
+```{r 5.4-host-permanova}
+run_host_permanova_table <- function(physeq, host_label) {
+metadata_host <- data.frame(sample_data(physeq))
+dist_list <- list(
+Sorensen = phyloseq::distance(physeq, method = "bray", binary = TRUE),
+Bray_Curtis = phyloseq::distance(physeq, method = "bray", binary = FALSE),
+Unweighted_UniFrac = phyloseq::distance(physeq, method = "unifrac"),
+Weighted_UniFrac   = phyloseq::distance(physeq, method = "wunifrac")
+)
+perm_control <- how(
+blocks = metadata_host$Unique_Colony,
+plots = Plots(strata = metadata_host$Unique_Colony, type = "none"),
+within = Within(type = "free"), nperm = 999
+)
+permanova_tables <- lapply(names(dist_list), function(metric_name) {
+res <- adonis2(dist_list[[metric_name]] ~ Site * Treatment, data = metadata_host, permutations = perm_control, by = "terms")
+as.data.frame(res) %>%
+mutate(Metric = metric_name, Term = rownames(.)) %>%
+select(Metric, Term, Df, SumOfSqs, F, R2, Pr(>F))
+})
+bind_rows(permanova_tables) %>% filter(Term %in% c("Site", "Treatment", "Site:Treatment"))
+}
+cat("\n--- POCILLOPORA SYMMETRIC 3-NODE TIMELINE STATISTICS ---\n")
+print(run_host_permanova_table(physeq_midpointTree_curated_POC_scaled, "Pocillopora"))
+cat("\n--- PORITES SYMMETRIC 3-NODE TIMELINE STATISTICS ---\n")
+print(run_host_permanova_table(physeq_midpointTree_curated_POR_scaled, "Porites"))
+```
+5.5 - Symmetric Host Timeline Pairwise Post-Hocs
+```{r 5.5-host-posthoc}
+Evaluates precise temporal and heat stress transitions across the streamlined nodes
+poc_posthoc_table <- run_host_pairwise_posthoc(physeq_midpointTree_curated_POC_scaled, "Pocillopora")
+por_posthoc_table <- run_host_pairwise_posthoc(physeq_midpointTree_curated_POR_scaled, "Porites")
+print(poc_posthoc_table)
+print(por_posthoc_table)
+```
+6 - Asymmetrical Environmental Tracking Analysis (Phylogenetic Plasticity)
+```{r 6-environmental-tracking}
+Dynamic tracking execution mapping out branch line transitions on raw ASVs + tree nodes
+coral_subtypes <- c("Coral POC", "Coral POR")
+env_medium     <- c("Seawater 0.2-micron", "Seawater 3-micron", "Sediment")
+all_raw_shifts <- list()
+for (current_coral in coral_subtypes) {
+physeq_tracking_combined <- subset_samples(physeq_midpointTree_curated_scaled, Subtype %in% c(current_coral, env_medium))
+dist_mat <- as.matrix(distance(physeq_tracking_combined, method = "unifrac", weighted = FALSE))
+metadata <- data.frame(sample_data(physeq_tracking_combined)) %>%
+mutate(SampleID = as.character(rownames(.)), Site = as.character(Site), Subtype = as.character(Subtype), Transplant = as.character(Transplant))
+coral_samples <- metadata %>% filter(Subtype == current_coral & Transplant == "Out Transplant")
+env_samples   <- metadata %>% filter(Subtype %in% env_medium)
+if(nrow(coral_samples) == 0) next
+sample_vectors <- lapply(1:nrow(coral_samples), function(i) {
+t_id   <- coral_samples$SampleID[i]
+t_site <- coral_samples$Site[i]
+t_origin <- if(t_site == "Tiahura") "Opunohu" else "Tiahura"
+coral_dist_vector <- dist_mat[t_id, ]
+lapply(env_medium, function(current_env) {
+local_env_ids  <- env_samples$SampleID[env_samples$Subtype == current_env & env_samples$Site == t_site]
+source_env_ids <- env_samples$SampleID[env_samples$Subtype == current_env & env_samples$Site == t_origin]
+if(length(local_env_ids) == 0 | length(source_env_ids) == 0) return(NULL)
+local_distances  <- coral_dist_vector[names(coral_dist_vector) %in% local_env_ids]
+source_distances <- coral_dist_vector[names(coral_dist_vector) %in% source_env_ids]
+data.frame(
+SampleID = t_id, Site = t_site, Coral_Host = current_coral, Environmental_Medium = current_env,
+To_Local = mean(local_distances, na.rm = TRUE), To_Source = mean(source_distances, na.rm = TRUE)
+)
+}) %>% bind_rows()
+}) %>% bind_rows()
+if (nrow(sample_vectors) > 0) { all_raw_shifts[[current_coral]] <- sample_vectors }
+}
+raw_shifts_df <- bind_rows(all_raw_shifts) %>% mutate(Individual_Shift = To_Source - To_Local)
+stats_df <- raw_shifts_df %>%
+group_by(Coral_Host, Environmental_Medium, Site) %>%
+summarise(P_Value = if(n() >= 3 && sd(Individual_Shift) != 0) wilcox.test(To_Local, To_Source, paired = TRUE)$p.value else NA, .groups = "drop") %>%
+mutate(P_adj = p.adjust(P_Value, method = "fdr"))
+plot_tracking_df <- raw_shifts_df %>%
+group_by(Coral_Host, Environmental_Medium, Site) %>%
+summarise(Mean_Shift = mean(Individual_Shift, na.rm = TRUE), SE_Shift = sd(Individual_Shift, na.rm = TRUE) / sqrt(n()), Sample_Size = n(), .groups = "drop") %>%
+left_join(stats_df, by = c("Coral_Host", "Environmental_Medium", "Site")) %>%
+mutate(
+Environmental_Medium = case_when(Environmental_Medium == "Seawater 0.2-micron" ~ "Free Living Water (0.2µm)", Environmental_Medium == "Seawater 3-micron" ~ "Particle Bound Water (3µm)", TRUE ~ "Benthic Sediment"),
+Coral_Host = if_else(Coral_Host == "Coral POC", "Pocillopora (POC)", "Porites (POR)")
+)
+print(plot_tracking_df)
+```
+7 - Alpha Diversity & Unified Hill Numbers Analysis
+7.1 - Alpha Profile Calculations & Boxplots
+```{r 7.1-alpha-modeling}
+Evaluate Shannon alpha profiles across the restructured metadata data frames
+alpha_poc <- estimate_richness(physeq_midpointTree_curated_POC_scaled, measures = c("Observed", "Shannon"))
+df_alpha_poc <- cbind(data.frame(sample_data(physeq_midpointTree_curated_POC_scaled)), alpha_poc) %>% mutate(Host = "Pocillopora")
+alpha_por <- estimate_richness(physeq_midpointTree_curated_POR_scaled, measures = c("Observed", "Shannon"))
+df_alpha_por <- cbind(data.frame(sample_data(physeq_midpointTree_curated_POR_scaled)), alpha_por) %>% mutate(Host = "Porites")
+df_alpha_all <- bind_rows(df_alpha_poc, df_alpha_por) %>%
+mutate(Treatment = factor(Treatment, levels = c("Genotype", "4-Month-PreHS", "Post-HS")))
+ggplot(df_alpha_all, aes(x = Treatment, y = Shannon, fill = Site)) +
+geom_boxplot(outlier.shape = NA, alpha = 0.6, position = position_dodge(0.8)) +
+geom_point(aes(color = Site), position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.8), size = 2, alpha = 0.7) +
+facet_wrap(~ Host, scales = "free_x") + theme_bw() +
+scale_fill_manual(values = c("Tiahura" = "#377eb8", "Opunohu" = "#e41a1c")) +
+scale_color_manual(values = c("Tiahura" = "#225ea8", "Opunohu" = "#cc0000"))
+```

@@ -1,0 +1,9 @@
+Species,Site,Destination,Genotype,2-Weeks,4-Months,Pre-HS,Post-HS
+POC,Opunohu,Opunohu,31.3,,31.6,60.7,35.6
+POC,Opunohu,Tiahura,,,13.5,48.0,71.4
+POC,Tiahura,Opunohu,,,59.3,103.4,80.3
+POC,Tiahura,Tiahura,33.7,,38.1,42.1,48.3
+POR,Opunohu,Opunohu,49.0,82.5,117.7,158.3,87.0
+POR,Opunohu,Tiahura,,52.8,,,
+POR,Tiahura,Opunohu,,63.0,156.3,114.3,102.3
+POR,Tiahura,Tiahura,42.9,44.3,,,

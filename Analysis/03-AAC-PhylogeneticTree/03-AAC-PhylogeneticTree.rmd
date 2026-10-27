@@ -1,0 +1,335 @@
+---
+title: "AAC - BIOcean5D Coral Microbiomes: 03 - Phylogenetic Tree"
+author: "Eric J. Armstrong, eja98@cornell.edu, @EricJ_Armstrong"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+generator: pandoc
+viewport: width=device-width, initial-scale=1
+output:
+  html_document:
+    code_folding: show
+    highlight: default
+    keep_md: true
+    theme: journal
+    toc: true
+    toc_float:
+      collapsed: false
+      smooth_scroll: true
+      toc_depth: 3
+  pdf_document:
+    toc: true
+editor_options:
+  chunk_output_type: console
+---
+
+
+```{r 0-setup, include=FALSE}
+
+# Define knitr options
+knitr::opts_chunk$set(
+  collapse = TRUE, 
+  echo=TRUE,
+  comment="#>", 
+  message=FALSE,
+  warning=FALSE,
+	fig.align="center",
+  fig.width=7,
+  fig.height=5,
+  dpi=300)
+
+knitr::opts_knit$set(
+  root.dir = 
+    "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/"
+  )
+
+# What time did we start running this script? 
+start_time <- Sys.time()
+```
+
+
+#### Purpose of this file  
+
+This file contains all of the code for producing a curated OTU table from the 16S microbial sequence data for the Armstrong et al. manuscript entitled **"XXX"**, published by [XXX](https://doi.org/10.1093/femsec/fiaa029).
+
+##### If you have any questions, you are welcome to email the corresponding author at eja98@cornell.edu or tweet him at [EricJ_Armstrong](https://x.com/EricJ_Armstrong).
+
+The goal is to create a phylogenetic tree
+
+1.  Load in preprocessed phyloseq object.
+2.  Create ASV fasta file from the phyloseq object.
+3.  Align the 16S sequences from fasta file with MAFFT.
+4.  Create a tree with FastTree2.
+
+Finally, write data file of phyloseq output, which will be stored in Data/03-AAC-PhylogeneticTree/.
+
+##### If you have any questions, you are welcome to email the corresponding author at eja98@cornell.edu or tweet him at [EricJ_Armstrong](https://x.com/EricJ_Armstrong).
+
+# 1 - Prepare Workspace
+Load necessary R packages and set default parameters
+
+## 1.1 - Define Paths
+```{r 1.1-define_paths}
+# a - Define the main project directory ----
+  dir_proj <- "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/"
+
+# b - Define the directory containing the input data ----
+  dir_in <- "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/Data/"
+    
+# c - Define the directories that will contain output Files/Figures/Tables ----
+  dir_out_dat <- 
+    "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/Data/03-AAC-PhylogeneticTree/"
+  dir.create(dir_out_dat, recursive = TRUE)
+  dir_out_fig <- 
+    "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/Figures/03-AAC-PhylogeneticTree/"
+  dir.create(dir_out_fig, recursive = TRUE)
+  dir_out_tab <- 
+    "C:/Users/uax75/OneDrive/Documents/R/AAC-BIOcean5D-Coral_Microbiome/Tables/03-AAC-PhylogeneticTree/"
+  dir.create(dir_out_tab, recursive = TRUE)
+```
+
+## 1.2 - Set Defaults
+```{r 1.2-set_defaults}
+# a - Define the output prefix for generated files ----
+  pref_out <- "03-AAC-PhylogeneticTree_"
+    
+# b - Set the random seed value ----
+  set.seed(123)
+
+```
+
+## 1.3 - Load Libraries
+```{r 1.3-load-lib}
+# a - load necessary packages ----
+  pacman::p_load(tidyverse, phyloseq, ggtree, phytools, ggplot2, expss, ape,
+                 install = FALSE)
+
+```
+
+## 1.4 - Load Phyloseq Object
+
+```{r 1.4-load-ps}
+# a - Load physeq ----
+  load(paste(dir_in,
+             "02-AAC-PreProcessing/",
+             "02-AAC-PreProcessing_physeq_noControlsChlorosMitos.RData",
+             sep = ""))
+```
+
+
+# 2 - Create Fasta File of ASV and their Sequences
+
+This fasta file will be used to create our alignment in MAFFT
+
+```{r 2-write-fasta}
+# a - pull out ASV seqs and ASV names ----
+  df_asv_seq <- 
+    physeq_noControlsChlorosMitos@refseq %>%
+    data.frame() %>%
+    rownames_to_column(var = "ASV") %>%
+    rename(RefSeq = 2)
+
+# b - Add the > to make fasta header ----
+  df_asv_seq$ASV <- paste0(">",df_asv_seq$ASV)
+  #View(asv_seq_df)
+
+# c - Create the fasta object ----
+  fasta_asv_seq <- c(rbind(df_asv_seq$ASV, df_asv_seq$RefSeq))
+  head(fasta_asv_seq)
+  
+# d - Write to a file ----
+  write(fasta_asv_seq, 
+        file = paste(dir_out_dat, pref_out,
+                     "PhyseqASVs.fasta",
+                     sep = ""))
+```
+
+# 3 - Align the 16S sequences from fasta file with MAFFT
+
+```{bash 3-align-seqs, eval = FALSE}
+# Write bash code to run mafft
+# First provide the path to mafft
+export PATH=/programs/mafft/bin:$PATH
+# change directories to provide the fasta file we made above
+cd /workdir/eja98/BIO5D_Data/Data/03-AAC-PhylogeneticTree/
+pwd
+
+# Set a seed  - using same seed as before for consistency
+RANDOM=238428
+
+# Run Mafft
+# To test in the shell directly from Rmd
+# mac: command + option + enter
+# Windows: control + alt + enter
+# For now, use default options, note the version
+# MAFFT automatically knows that it's a nucleotide alignment
+/programs/mafft/bin/mafft --auto 03-AAC-PhylogeneticTree_PhyseqASVs.fasta > 03-AAC-PhylogeneticTree_MAFFT_aligned_PhyseqASVs.fasta
+```
+
+# 4 - FastTree2
+
+```{bash 4-fast-tree, eval = FALSE}
+# Provide export path to fasttree
+export PATH=/programs/FastTree-2.1.11:$PATH
+
+# cd into the alignment file folder
+cd /workdir/eja98/BIO5D_Data/Data/03-AAC-PhylogeneticTree/
+pwd
+
+
+FastTree -nt -gtr -fastest -log FastTree.log 03-AAC-PhylogeneticTree_MAFFT_aligned_PhyseqASVs.fasta > 03-AAC-PhylogeneticTree_PhyseqASVs_Unrooted.tree
+```
+
+# 5 - Tree Visualizations
+# 5.1 - Load in the tree ----
+```{r}
+unrooted_tree <- read.tree(
+  paste(dir_in, "03-AAC-PhylogeneticTree/",
+        "03-AAC-PhylogeneticTree_PhyseqASVs_Unrooted.tree", sep = ""))
+unrooted_tree
+```
+
+# 5.2 - Merge tree and phyloseq objects ----
+```{r}
+# Intuition check 
+stopifnot(ntaxa(physeq_noControlsChlorosMitos) == ntaxa(unrooted_tree))
+
+# Merge the tree with the phyloseq object 
+unrooted_physeq <- 
+  merge_phyloseq(physeq_noControlsChlorosMitos, unrooted_tree)
+```
+
+# 5.3 - Plot the tree ----
+```{r}
+# Make a basic tree
+kingdom_tree <- 
+  ggtree(unrooted_physeq) + 
+  # color tips by kingdom 
+  geom_tippoint(mapping = aes(color = Kingdom)) + 
+  scale_color_manual(
+    values = c("goldenrod1", "cornflowerblue", "green", "red")) +
+  # Add title 
+  labs(title = "Unrooted Tree") + 
+  #move the legend to the bottom 
+  theme(legend.position = "bottom")
+kingdom_tree
+```
+
+# 5.4 - Prune bad taxa ----
+```{r}
+# Function from Joey McMurdie: https://github.com/joey711/phyloseq/issues/652
+pop_taxa = function(physeq, badTaxa){
+  allTaxa <-  taxa_names(physeq)
+  allTaxa <- allTaxa[!(allTaxa %in% badTaxa)]
+  return(prune_taxa(allTaxa, physeq))}
+
+# Let's use the pop_taxa function :) 
+# Recreate a phyloseq object without eukaryotic taxa
+EukTaxa <- unrooted_physeq %>%
+  subset_taxa(., Kingdom %in% c("Eukaryota", NA)) %>%
+  otu_table(.) %>%
+  rownames(.)
+
+unrooted_physeq_noEuk <- 
+  unrooted_physeq %>%
+  pop_taxa(., EukTaxa)
+
+kingdom_tree_noEuk <- 
+  ggtree(unrooted_physeq_noEuk) + 
+  # color tips by kingdom 
+  geom_tippoint(mapping = aes(color = Kingdom)) + 
+  scale_color_manual(values = c("goldenrod1", "cornflowerblue", "red")) +
+  # Add the node label 
+  geom_text(aes(label=node), hjust= -0.5, vjust = -0.3, size = 2) +
+  # Add title 
+  labs(title = "Unrooted Tree") + 
+  #move the legend to the bottom 
+  theme(legend.position = "bottom")
+kingdom_tree_noEuk
+
+# Let's use the pop_taxa function :) 
+# Recreate a phyloseq object without the long-branch-length taxa
+
+# 1. Extract the tree from your phyloseq object (named 'ps')
+tree <- phy_tree(unrooted_physeq_noEuk)
+
+# 2. Find terminal edge (branch) lengths corresponding to each tip
+is_tip <- tree$edge[, 2] <= Ntip(tree)
+tip_nodes <- tree$edge[is_tip, 2]
+terminal_lengths <- tree$edge.length[is_tip]
+
+# 3. Create a named vector matching tip IDs (taxa names) to branch lengths
+names(terminal_lengths) <- tree$tip.label[tip_nodes]
+
+# 4. Set your threshold (e.g., branches longer than 0.37 or 89th percentile)
+threshold <- 0.37
+long_branch_ids <- names(terminal_lengths[terminal_lengths > threshold])
+
+# View the retrieved taxon IDs
+print(long_branch_ids)
+
+# Extract the taxonomy row for that specific ASV
+tax_info <- tax_table(unrooted_physeq_noEuk)[long_branch_ids, ]
+
+# View as a named character vector or convert to data frame
+print(tax_info)
+as.data.frame(tax_info)
+
+unrooted_physeq_noEuk_clean <-
+  unrooted_physeq_noEuk %>%
+  pop_taxa(., long_branch_ids)
+
+kingdom_tree_root <-
+  ggtree(unrooted_physeq_noEuk_clean) +
+  # color tips by kingdom
+  geom_tippoint(mapping = aes(color = Kingdom)) +
+  scale_color_manual(values = c("goldenrod1", "cornflowerblue", "grey")) +
+  # Add the node label
+  geom_text(aes(label=node), hjust= -0.5, vjust = -0.3, size = 2) +
+  # Add title
+  labs(title = "Unrooted Tree") +
+  #move the legend to the bottom
+  theme(legend.position = "bottom")
+kingdom_tree_root
+
+```
+
+# 5.5 - Root the Tree ----
+```{r}
+# Is the tree rooted?
+is.rooted(phy_tree(unrooted_physeq_noEuk_clean))
+
+# Let's midpoint root the tree
+midpoint_rooted_tree <- 
+  phangorn::midpoint(
+    reorder(phy_tree(unrooted_physeq_noEuk_clean), "cladewise")
+  )
+
+# Is the new tree rooted?
+is.rooted(midpoint_rooted_tree)
+```
+
+# 5.6 - Create New Phyloseq Object ----
+```{r}
+# a - Merge tree with the new unrooted_physeq_noEuk_clean ----
+  physeq_midpointTree <- 
+    merge_phyloseq(unrooted_physeq_noEuk_clean, midpoint_rooted_tree)
+
+  # Get vector of taxa names present in your merged OTU table
+  valid_taxa <- taxa_names(physeq_midpointTree)
+
+  # Prune the original tree to keep only these taxa
+  pruned_tree <- keep.tip(midpoint_rooted_tree, valid_taxa)
+
+  # Add the pruned, rooted tree back to the physeq object
+  phy_tree(physeq_midpointTree) <- pruned_tree
+
+  # Save both phyloseq objects with our tree object to one .RData file
+  save(physeq_midpointTree,
+           file = paste(dir_out_dat,
+                        pref_out,
+                        "physeq_midpointTree.RData", sep = ""))
+```
+
+# Session Information
+```{r}
+devtools::session_info()
+```
