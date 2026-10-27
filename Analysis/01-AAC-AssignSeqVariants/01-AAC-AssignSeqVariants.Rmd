@@ -3,6 +3,8 @@ title: "AAC - BIOcean5D Coral Microbiomes: 01 - Assign Sequence Variants"
 author: "Eric J. Armstrong, eja98@cornell.edu, @EricJ_Armstrong"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
+  pdf_document:
+    toc: true
   html_document:
     code_folding: show
     highlight: default
@@ -13,8 +15,6 @@ output:
       collapsed: false
       smooth_scroll: true
       toc_depth: 3
-  pdf_document:
-    toc: true
 editor_options:
   chunk_output_type: console
 ---
@@ -583,7 +583,17 @@ As a final check of our progress, we’ll look at the number of reads that made 
     mutate(perc_reads_retained = 100 * nochim / input)
 
   # Visualize it in table format
-  DT::datatable(track_counts_df)
+  # DT::datatable() is an HTML widget and halts a PDF render with
+  # "Functions that produce HTML output found in document targeting latex
+  # output". Emit the interactive table for HTML and a static one otherwise, so
+  # the script knits to either format unchanged.
+  if (knitr::is_html_output()) {
+    DT::datatable(track_counts_df)
+  } else {
+    knitr::kable(track_counts_df, longtable = TRUE, booktabs = TRUE,
+                 digits = 1,
+                 caption = "Reads retained at each stage of the DADA2 pipeline")
+  }
 ```
 
 # 13 - Assign Taxonomy

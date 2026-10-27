@@ -105,6 +105,7 @@ Load necessary R packages and set default parameters
 # a - load necessary packages ----
   pacman::p_load(devtools, phyloseq, dada2, patchwork, xlsx, BiMiCo,
                  Biostrings, tidyverse, ggpubr, rstatix, ggplot2, expss,
+                 decontam,
                  install = FALSE)
 
 ```
@@ -219,12 +220,28 @@ Load the necessary input data
   
 ```
 
-## 3.2 - Evaulate & Remove Controls
-Take a look at the negative controls and then make a decision about whether or not to remove the ASVs that were found in them
+## 3.2 - Evaluate & Remove Controls
+Inspect the negative controls, then decide which of the ASVs found in them are
+genuine contaminants rather than real taxa carried into the blanks by index
+hopping and low-level cross-contamination.
 
     Negative controls
     ASVs found within the negative controls and their distribution in the samples.
-    Evaluate the mock community
+    Statistical identification of contaminants with decontam
+
+Four negative controls carry reads - one Field Blank, one PCR Blank and two
+Extraction Blanks. (A fifth control in the sample key yielded none, and script 01
+drops `neg-pcr2` as a bad sample.)
+
+This step changed on 27 October 2026. Two faults had to be corrected together:
+`ASVs_control` was built as a one-column data.frame rather than a character
+vector, so the removal in step i matched nothing and no ASV was ever discarded;
+and until the environmental and control FASTQs were re-trimmed to the common
+amplicon window (see section 3.2 of script 01), no blank ASV could have matched a
+coral ASV in any case, because the two sets of reads began at different bases.
+With both repaired, the blanks share an ASV space with the samples for the first
+time and this filter finally has real work to do - which is also why blanket
+removal of every blank ASV is no longer acceptable and decontam is used instead.
 
 ```{r 3.2-remove_controls}
 # a - Create a vector of samples that were negative controls --
@@ -244,25 +261,62 @@ Take a look at the negative controls and then make a decision about whether or n
 
   physeq_control
   
-# c - Vector of control ASVs ----
+# c - Control ASVs, in both identifier namespaces ----
+  # NOTE: as.vector() does NOT flatten a data.frame - it returns it unchanged -
+  # so the previous version of this object was a one-column data.frame. Step e
+  # worked because it indexed ASVs_control$ASV, but step i tested
+  # `ASV %in% ASVs_control` against the data.frame itself, which coerces to a
+  # deparsed string, matches nothing, and silently removed no taxa at all.
+  # dplyr::pull() returns the character vector both steps assume.
   ASVs_control <- 
     physeq_control %>%
     tax_table() %>%
     data.frame() %>%
-    # rownames_to_column(var = "ASV") %>%
-    dplyr::select(ASV) %>%
-    as.vector()
+    dplyr::pull(ASV)
+
+  # This object carries the tax_table's ASV column ("ASV_1", "ASV_2", ...),
+  # which is NOT the same namespace as taxa_names(): script 01 renames taxa via
+  # microbiome::add_refseq(tag = "ASV") to "ASV1", "ASV2", .... Pruning must use
+  # taxa_names(), so keep a matching vector in that namespace and never mix them.
+  seqs_control <- taxa_names(physeq_control)
+
+  stopifnot(length(ASVs_control) == length(seqs_control))
+
+# c2 - Cap the set used for plotting and testing ----
+  # Steps d-h draw one facet panel and one Wilcoxon test per blank ASV. Before
+  # the amplicon window was repaired the blanks shared almost nothing with the
+  # samples, so that was a handful of panels; now that they occupy the same ASV
+  # space it can be hundreds, which makes the figure unreadable and risks
+  # stat_pvalue_manual() failing on NA positions from constant-value groups.
+  # The diagnostic is therefore capped at the most abundant blank ASVs, ranked
+  # by their abundance IN THE CONTROLS - the ones that actually characterise the
+  # blanks. Removal in steps i-k still considers every ASV, so nothing is
+  # excluded from the filtering itself; this cap is presentational only.
+  n_plot_control_asvs <- 20
+
+  seqs_control_top <- 
+    physeq_control %>%
+    taxa_sums() %>%
+    sort(decreasing = TRUE) %>%
+    names() %>%
+    head(n_plot_control_asvs)
+
+  cat("Blank ASVs:", length(seqs_control), "total;",
+      length(seqs_control_top), "shown in the diagnostic plots.\n")
 
 # d - Visualize raw abundance values of control ASVs ----
-  # physeq_control %>%
-  #   plot_bar(., "ASV", fill = "ASV")
-  plot_bar(physeq_control, "ASV", fill = "ASV") +
+  plot_bar(prune_taxa(seqs_control_top, physeq_control), 
+           "ASV", fill = "ASV") +
+    labs(title = paste0("Top ", length(seqs_control_top), 
+                        " ASVs in the negative controls")) +
     theme(legend.position = "none")
   
 # e - Use vector to subset from larger dataset ---- 
+  # prune_taxa() rather than subset_taxa(ASV %in% ...) so this stays in the
+  # taxa_names() namespace and cannot be crossed with the tax_table ASV column.
   physeq_neg_controlASV <- 
     physeq_noChlorosMitos %>%
-    subset_taxa(., ASV %in% ASVs_control$ASV) %>%
+    prune_taxa(seqs_control_top, .) %>%
     # we will also need to remove the positive controls from the samples! 
     # We will evaluate the Mock community a bit later on. :) 
     subset_samples(., Subtype != "ZymoMock")
@@ -317,15 +371,74 @@ Take a look at the negative controls and then make a decision about whether or n
     theme(axis.text.x = element_blank(), axis.title.x = element_blank(),
           legend.title = element_blank(), legend.position = c(0.85, 0.07))
   
-# i - Remove Control Taxa & Make my new phloseq object ---- 
+# i - Identify contaminants with decontam ----
+  # Removing every ASV that appears in a blank is too blunt. The controls share
+  # the 515F/926R window with the corals, so index hopping and low-level
+  # carry-over place genuine, abundant taxa in the blanks; blanket removal would
+  # delete real community members. decontam's prevalence model asks the right
+  # question instead - is this ASV MORE prevalent in the controls than in the
+  # true samples? - and flags only those.
+  #
+  # threshold = 0.5 implements the "more prevalent in controls than in samples"
+  # rule. It is the appropriate choice here because only four negative controls
+  # carry reads (one Field, one PCR, two Extraction blanks; the fifth control in
+  # the sample key yielded none), which leaves the default threshold of 0.1 with
+  # very little power.
+
+  sample_data(physeq_noChlorosMitos)$is_control <- 
+    sample_data(physeq_noChlorosMitos)$Group == "Control"
+
+  contam_df <- 
+    decontam::isContaminant(physeq_noChlorosMitos,
+                            method    = "prevalence",
+                            neg       = "is_control",
+                            threshold = 0.5)
+
+  seqs_contaminant <- rownames(contam_df)[contam_df$contaminant]
+
+# j - Report what is removed, against what blanket removal would have done ----
+  physeq_true <- 
+    physeq_noChlorosMitos %>%
+    subset_samples(., Group == "TrueSample") %>%
+    prune_taxa(taxa_sums(.) > 0, .)
+
+  pct_reads <- function(ps, taxa) {
+    keep <- intersect(taxa_names(ps), taxa)
+    if (length(keep) == 0) return(0)
+    100 * sum(otu_table(prune_taxa(keep, ps))) / sum(otu_table(ps))
+  }
+
+  cat("\n--- Control filtering ---\n",
+      "ASVs detected in the blanks   :", length(seqs_control),
+      sprintf("(%.2f%% of true-sample reads)", pct_reads(physeq_true, seqs_control)), "\n",
+      "ASVs flagged by decontam      :", length(seqs_contaminant),
+      sprintf("(%.2f%% of true-sample reads)", pct_reads(physeq_true, seqs_contaminant)), "\n",
+      "Blank ASVs retained as real   :", 
+      length(setdiff(seqs_control, seqs_contaminant)), "\n\n")
+
+  # Taxonomy of what is being discarded, for the record
+  if (length(seqs_contaminant) > 0) {
+    physeq_noChlorosMitos %>%
+      prune_taxa(seqs_contaminant, .) %>%
+      tax_table() %>%
+      data.frame() %>%
+      dplyr::select(Phylum, Class, Order, Family, Genus, ASV) %>%
+      print()
+  }
+
+# k - Remove contaminant taxa and the control samples ----
+  keep_taxa <- setdiff(taxa_names(physeq_noChlorosMitos), seqs_contaminant)
 
   physeq_noControlsChlorosMitos <- 
     physeq_noChlorosMitos %>%
-    # Actually remove the control ASVs (except 18, 56)
-    subset_taxa(., !(ASV %in% ASVs_control))  %>%
+    prune_taxa(keep_taxa, .) %>%
     # Remove control samples 
     subset_samples(., !(Subtype %in% 
-                          c("PCR Blank", "Extraction Blank", "Field Blank")))
+                          c("PCR Blank", "Extraction Blank", "Field Blank"))) %>%
+    # Drop ASVs left at zero once the controls are gone
+    prune_taxa(taxa_sums(.) > 0, .)
+
+  physeq_noControlsChlorosMitos
 
   
 # j - save processed physeq object ----
