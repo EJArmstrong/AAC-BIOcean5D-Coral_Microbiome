@@ -15,6 +15,9 @@ output:
       toc_depth: 3
   pdf_document:
     toc: true
+    # XeLaTeX rather than the default pdflatex: this document contains
+    # Unicode that pdflatex cannot typeset and would halt on.
+    latex_engine: xelatex
 editor_options:
   chunk_output_type: console
 ---

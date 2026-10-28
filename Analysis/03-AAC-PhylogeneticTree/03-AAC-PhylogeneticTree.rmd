@@ -5,6 +5,8 @@ date: "`r format(Sys.time(), '%d %B, %Y')`"
 generator: pandoc
 viewport: width=device-width, initial-scale=1
 output:
+  pdf_document:
+    toc: true
   html_document:
     code_folding: show
     highlight: default
@@ -15,8 +17,6 @@ output:
       collapsed: false
       smooth_scroll: true
       toc_depth: 3
-  pdf_document:
-    toc: true
 editor_options:
   chunk_output_type: console
 ---
@@ -102,6 +102,16 @@ Load necessary R packages and set default parameters
   pacman::p_load(tidyverse, phyloseq, ggtree, phytools, ggplot2, expss, ape,
                  install = FALSE)
 
+  # DECIPHER and Biostrings are deliberately NOT attached. Attaching either
+  # pulls in S4Vectors and BiocGenerics, whose exports (rename, select,
+  # setdiff, intersect, union, ...) mask the dplyr verbs this script relies on
+  # - attaching them after tidyverse sent `rename(RefSeq = 2)` below to
+  # S4Vectors::rename and halted the knit. Both are called with the `::`
+  # prefix in sections 4b.1 and 4b.2, which needs them installed but not
+  # attached. Check availability early so the failure is clear.
+  stopifnot(requireNamespace("DECIPHER",   quietly = TRUE),
+            requireNamespace("Biostrings", quietly = TRUE))
+
 ```
 
 ## 1.4 - Load Phyloseq Object
@@ -125,7 +135,7 @@ This fasta file will be used to create our alignment in MAFFT
     physeq_noControlsChlorosMitos@refseq %>%
     data.frame() %>%
     rownames_to_column(var = "ASV") %>%
-    rename(RefSeq = 2)
+    dplyr::rename(RefSeq = 2)
 
 # b - Add the > to make fasta header ----
   df_asv_seq$ASV <- paste0(">",df_asv_seq$ASV)
@@ -176,6 +186,107 @@ pwd
 
 
 FastTree -nt -gtr -fastest -log FastTree.log 03-AAC-PhylogeneticTree_MAFFT_aligned_PhyseqASVs.fasta > 03-AAC-PhylogeneticTree_PhyseqASVs_Unrooted.tree
+```
+
+
+# 4b - Alignment and tree, run locally in R
+
+The two chunks above are the commands that were run on the Cornell BioHPC node.
+They are kept for the record and are not evaluated. That cluster is no longer
+available, so the alignment and the tree are now produced from this script.
+
+* **Alignment** - `DECIPHER::AlignSeqs()` replaces `mafft --auto`. It performs
+  the same kind of iterative profile alignment, runs inside R, and handles a set
+  of this size without difficulty.
+* **Tree** - FastTree2 is still used, with the identical flags
+  (`-nt -gtr -fastest`), called through the Windows binary rather than a cluster
+  module. The tree method is therefore unchanged from the original analysis.
+  Download `FastTree.exe` once from <http://www.microbesonline.org/fasttree/>
+  and either place it on the PATH or point `FASTTREE_EXE` at it.
+
+Both steps cache to disk and are skipped when their output already exists, so
+re-knitting this document does not repeat hours of work. Delete the output file
+to force a rebuild.
+
+```{r 4b.1-align-decipher}
+# a - Paths ----
+  fa_in   <- paste0(dir_out_dat, pref_out, "PhyseqASVs.fasta")
+  fa_algn <- paste0(dir_out_dat, pref_out, "DECIPHER_aligned_PhyseqASVs.fasta")
+
+# b - Align, or reuse an existing alignment ----
+  # Reuse an existing alignment ONLY if it covers exactly the current ASV set.
+  # A bare file.exists() check is unsafe here: the repository still carries
+  # alignment and tree files from the May 2026 run, built before the amplicon
+  # window was repaired, and silently reusing those would mismatch the taxa.
+  reuse_algn <- FALSE
+  if (file.exists(fa_algn)) {
+    old <- try(Biostrings::readDNAStringSet(fa_algn), silent = TRUE)
+    reuse_algn <- !inherits(old, "try-error") &&
+      setequal(names(old), taxa_names(physeq_noControlsChlorosMitos))
+    if (!reuse_algn)
+      message("Existing alignment does not match the current ASV set",
+              " - realigning.")
+  }
+
+  if (!reuse_algn) {
+    dna <- Biostrings::readDNAStringSet(fa_in)
+    message("Aligning ", length(dna), " ASVs with DECIPHER::AlignSeqs ...")
+    algn <- DECIPHER::AlignSeqs(dna,
+                                anchor     = NA,
+                                processors = NULL,   # use all cores
+                                verbose    = TRUE)
+    Biostrings::writeXStringSet(algn, filepath = fa_algn)
+  } else {
+    algn <- Biostrings::readDNAStringSet(fa_algn)
+    message("Reusing existing alignment (", length(algn), " sequences)")
+  }
+
+  algn
+```
+
+```{r 4b.2-fasttree-local}
+# a - Locate the FastTree executable ----
+  # Set this once per machine, e.g. in .Rprofile:
+  #   Sys.setenv(FASTTREE_EXE = "C:/bin/FastTree.exe")
+  fasttree_exe <- Sys.getenv("FASTTREE_EXE", unset = "FastTree.exe")
+
+  tre_out <- paste0(dir_out_dat, pref_out, "PhyseqASVs_Unrooted.tree")
+  tre_log <- paste0(dir_out_dat, "FastTree.log")
+
+# b - Build the tree, or reuse an existing one ----
+  # Same caution as for the alignment: the May 2026 tree sits at exactly this
+  # path, so validate the tip labels rather than trusting the filename.
+  reuse_tree <- FALSE
+  if (file.exists(tre_out)) {
+    old_tree <- try(ape::read.tree(tre_out), silent = TRUE)
+    reuse_tree <- !inherits(old_tree, "try-error") &&
+      setequal(old_tree$tip.label, taxa_names(physeq_noControlsChlorosMitos))
+    if (!reuse_tree)
+      message("Existing tree does not match the current ASV set - rebuilding.")
+  }
+
+  if (!reuse_tree) {
+
+    if (Sys.which(fasttree_exe) == "" && !file.exists(fasttree_exe))
+      stop("FastTree executable not found: '", fasttree_exe, "'.\n",
+           "Download FastTree.exe from http://www.microbesonline.org/fasttree/ ",
+           "and either place it on the PATH or set FASTTREE_EXE to its full ",
+           "path, e.g. Sys.setenv(FASTTREE_EXE = 'C:/bin/FastTree.exe').")
+
+    message("Running FastTree (-nt -gtr -fastest) on ", basename(fa_algn), " ...")
+    status <- system2(fasttree_exe,
+                      args   = c("-nt", "-gtr", "-fastest",
+                                 "-log", shQuote(tre_log, type = "cmd"),
+                                 shQuote(fa_algn, type = "cmd")),
+                      stdout = tre_out)
+
+    if (!identical(as.integer(status), 0L) || !file.exists(tre_out))
+      stop("FastTree failed with status ", status)
+
+    message("Tree written to ", tre_out)
+  } else {
+    message("Reusing existing tree: ", tre_out)
+  }
 ```
 
 # 5 - Tree Visualizations

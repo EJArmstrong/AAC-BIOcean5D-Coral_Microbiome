@@ -3,6 +3,8 @@ title: "Project AAC - BIOcean5D Coral Microbiomes: 02 - Data Pre-Processing"
 author: "Eric J. Armstrong, eja98@cornell.edu, @EricJ_Armstrong"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output:
+  pdf_document:
+    toc: true
   html_document:
     code_folding: show
     highlight: default
@@ -13,8 +15,6 @@ output:
       collapsed: false
       smooth_scroll: true
       toc_depth: 3
-  pdf_document:
-    toc: true
 editor_options:
   chunk_output_type: console
 ---

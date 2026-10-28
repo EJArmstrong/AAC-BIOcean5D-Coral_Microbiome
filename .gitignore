@@ -57,3 +57,4 @@ Data/07-AAC-RNAseq/**/*.fastp.html
 Data/01-AAC-AssignSeqVariants/DADA2-Results/01-AAC-AssignSeqVariants_dadaF.ASV.rds
 Data/03-AAC-PhylogeneticTree/FastTree.log
 maaslin2_output_directory/
+Data/03-AAC-PhylogeneticTree/03-AAC-PhylogeneticTree_DECIPHER_aligned_PhyseqASVs.fasta
