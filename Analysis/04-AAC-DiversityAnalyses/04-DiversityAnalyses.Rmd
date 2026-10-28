@@ -2,8 +2,13 @@
 title: "04-DiversityAnalyses"
 author: "Eric J Armstrong"
 date: "2026-1-26"
-
 output:
+  pdf_document:
+    toc: yes
+    toc_depth: '3'
+  word_document:
+    toc: yes
+    toc_depth: '3'
   html_document:
     df_print: paged
     theme: cerulean
@@ -14,17 +19,7 @@ output:
       collapsed: no
       smooth_scroll: yes
     code_fold: show
-  word_document:
-    toc: yes
-    toc_depth: '3'
-  pdf_document:
-    toc: yes
-    toc_depth: '3'
 ---
-
-```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
-```
 
 <style>
 pre code, pre, code {
@@ -67,6 +62,7 @@ knitr::opts_chunk$set(
   fig.height=5,
   dpi=150)
 knitr::opts_knit$set(root.dir = path)
+knitr::opts_chunk$set(echo = TRUE)
 ```
 
 

@@ -16,9 +16,9 @@ output:
       smooth_scroll: true
       toc_depth: 3
   pdf_document:
+    # Unicode that pdflatex cannot typeset and would halt on.
     toc: true
     # XeLaTeX rather than the default pdflatex: this document contains
-    # Unicode that pdflatex cannot typeset and would halt on.
     latex_engine: xelatex
 editor_options:
   chunk_output_type: console
@@ -118,6 +118,51 @@ Load necessary R packages and set default parameters
                  ggplot2, pairwiseAdonis, nlme, car,
                install = FALSE)
 
+```
+
+```{r 1.3b-between-colony-helper}
+# PATCH 2026-10-28: reusable between-colony test for Origin.
+# Plots(strata = ..., type = "free") requires BALANCED strata - permute::check() stops with
+# "Design must be balanced if permuting 'strata'" as soon as colonies contribute unequal
+# fragment counts, which became true after the amplicon-window repair changed which
+# libraries survive filtering. This helper keeps the whole-colony permutation wherever the
+# design is still balanced, and otherwise collapses each colony to a centroid and tests
+# Origin on those points under unrestricted permutation - a valid between-colony test that
+# needs no balance, because one point per colony makes colony the unit of replication by
+# construction. NOTE: in the centroid case R2 is the variance among COLONY CENTROIDS
+# explained by Origin, not the variance among fragments, so it is not comparable with the
+# balanced-case R2. The scheme actually used is printed and stored as an attribute.
+
+origin_between_test <- function(dm, meta, nperm = 999) {
+
+  stopifnot(all(c("Colony_ID", "Origin") %in% names(meta)))
+
+  frag     <- table(meta$Colony_ID)
+  balanced <- length(unique(as.vector(frag))) == 1
+
+  if (balanced) {
+    ctrl <- how(plots  = Plots(strata = meta$Colony_ID, type = "free"),
+                within = Within(type = "none"), nperm = nperm)
+    res  <- adonis2(dm ~ Origin, data = meta, permutations = ctrl, by = "terms")
+    attr(res, "scheme") <- "whole colonies"
+  } else {
+    k    <- min(nrow(meta) - 1L, 20L)
+    pc   <- cmdscale(dm, k = k, eig = TRUE)
+    keep <- pc$eig[seq_len(ncol(pc$points))] > 1e-8
+    pts  <- pc$points[, keep, drop = FALSE]
+    cen  <- aggregate(pts, by = list(Colony_ID = meta$Colony_ID), FUN = mean)
+    key  <- dplyr::distinct(meta[, c("Colony_ID", "Origin")])
+    cen  <- dplyr::left_join(cen, key, by = "Colony_ID")
+    dmc  <- dist(cen[, setdiff(names(cen), c("Colony_ID", "Origin"))])
+    res  <- adonis2(dmc ~ Origin, data = cen, permutations = nperm, by = "terms")
+    attr(res, "scheme") <- "colony centroids"
+  }
+
+  cat("  fragments per colony:",
+      paste(sort(unique(as.vector(frag))), collapse = "/"),
+      "->", attr(res, "scheme"), "\n")
+  res
+}
 ```
 
 ## 1.4 - Load Phyloseq Object
@@ -301,7 +346,7 @@ Load necessary R packages and set default parameters
               step = 50, 
               # sample = min(rowSums(OTU_table)),
               col = "black", label = FALSE, main = "Rarefaction Curves")
-  plot_rareCurves
+  # plot_rareCurves
 
 # c - Identify samples that haven't reached the asymptote ----
   # Extract the x and y coordinates for each sample curve
@@ -940,9 +985,39 @@ run_host_permanova_table <- function(physeq, host_label) {
   stopifnot(!vary_within(metadata_host$Origin))        # between-colony
   stopifnot(vary_within(metadata_host$Treatment))      # within-colony
 
+  # PATCH 2026-10-28: the whole-colony scheme requires BALANCED strata. permute::check()
+  # stops with "Design must be balanced if permuting 'strata'" the moment colonies
+  # contribute unequal numbers of fragments, which became true after the amplicon-window
+  # repair changed which libraries survive filtering. Where the design is balanced we keep
+  # the original scheme; where it is not we test Origin on colony CENTROIDS under
+  # unrestricted permutation. That is a legitimate between-colony test in its own right -
+  # one point per colony, so colony is the unit of replication by construction - and it
+  # needs no balance. Its R2 is the variance among COLONY CENTROIDS explained by Origin,
+  # not the variance among fragments, so it is labelled distinctly in the output.
+  frag_per_colony <- table(metadata_host$Colony_ID)
+  balanced <- length(unique(as.vector(frag_per_colony))) == 1
+
   cat("\n", host_label, "- design being tested (origin x destination):\n")
   print(table(Origin = metadata_host$Origin, Destination = metadata_host$Destination))
-  cat("  colonies:", length(unique(metadata_host$Colony_ID)), "| samples:", nrow(metadata_host), "\n")
+  cat("  colonies:", length(unique(metadata_host$Colony_ID)),
+      "| samples:", nrow(metadata_host), "\n")
+  cat("  fragments per colony:",
+      paste(sort(unique(as.vector(frag_per_colony))), collapse = "/"),
+      if (balanced) "- balanced, permuting whole colonies\n"
+      else "- UNBALANCED, testing Origin on colony centroids\n")
+
+  # Helper: collapse a distance matrix to one point per colony
+  colony_centroids <- function(dm) {
+    k   <- min(nrow(metadata_host) - 1L, 20L)
+    pc  <- cmdscale(dm, k = k, eig = TRUE)
+    keep <- pc$eig[seq_len(ncol(pc$points))] > 1e-8
+    pts <- pc$points[, keep, drop = FALSE]
+    cen <- aggregate(pts, by = list(Colony_ID = metadata_host$Colony_ID), FUN = mean)
+    key <- dplyr::distinct(metadata_host[, c("Colony_ID", "Origin")])
+    cen <- dplyr::left_join(cen, key, by = "Colony_ID")
+    list(dm = dist(cen[, setdiff(names(cen), c("Colony_ID", "Origin"))]),
+         meta = cen)
+  }
 
   # 3. Loop over metrics, testing each term under the scheme appropriate to it
   permanova_tables <- lapply(names(dist_list), function(metric_name) {
@@ -959,22 +1034,32 @@ run_host_permanova_table <- function(physeq, host_label) {
     df_within$Scheme <- "within colonies"
 
     # Between-colony term: Origin (colony provenance)
-    res_between <- adonis2(dm ~ Origin,
-                           data = metadata_host,
-                           permutations = perm_between,
-                           by = "terms")
-    df_between <- as.data.frame(res_between)
-    df_between$Term   <- rownames(df_between)
-    df_between$Scheme <- "whole colonies"
+    if (balanced) {
+      res_between <- adonis2(dm ~ Origin,
+                             data = metadata_host,
+                             permutations = perm_between,
+                             by = "terms")
+      df_between <- as.data.frame(res_between)
+      df_between$Scheme <- "whole colonies"
+    } else {
+      cc <- colony_centroids(dm)
+      res_between <- adonis2(cc$dm ~ Origin,
+                             data = cc$meta,
+                             permutations = 999,
+                             by = "terms")
+      df_between <- as.data.frame(res_between)
+      df_between$Scheme <- "colony centroids"
+    }
+    df_between$Term <- rownames(df_between)
 
     bind_rows(df_within, df_between) %>%
       mutate(Metric = metric_name) %>%
-      select(Metric, Term, Scheme, Df, SumOfSqs, `F`, R2, `Pr(>F)`)
+      dplyr::select(Metric, Term, Scheme, Df, SumOfSqs, `F`, R2, `Pr(>F)`)
   })
 
   # 4. Combine and isolate the experimental factors
   bind_rows(permanova_tables) %>%
-    filter(Term %in% c("Origin", "Destination", "Treatment", "Destination:Treatment"))
+    dplyr::filter(Term %in% c("Origin", "Destination", "Treatment", "Destination:Treatment"))
 }
 
 # b - Run the function independently for both scaled host objects ----
@@ -1522,12 +1607,8 @@ Even with the pooled rows, the results tell a highly distinct biological story:
 # Re-run Pocillopora with explicit terms breakdown
 # PATCH 2026-10-26: Origin is constant within a colony, so it must be tested by
 # permuting whole colonies; Destination and Timepoint vary within a colony.
-perm_poc_between <- how(plots  = Plots(strata = meta_poc_hs$Colony_ID, type = "free"),
-                        within = Within(type = "none"), nperm = 999)
-
-poc_hs_origin <- adonis2(dm_poc_hs ~ Origin, data = meta_poc_hs,
-                         permutations = perm_poc_between, by = "terms")
-cat("\n--- POCILLOPORA ORIGIN (whole colonies permuted) ---\n")
+cat("\n--- POCILLOPORA ORIGIN (between colonies) ---\n")
+poc_hs_origin <- origin_between_test(dm_poc_hs, meta_poc_hs)
 print(poc_hs_origin)
 
 poc_hs_breakdown <- adonis2(dm_poc_hs ~ Destination * Timepoint,
