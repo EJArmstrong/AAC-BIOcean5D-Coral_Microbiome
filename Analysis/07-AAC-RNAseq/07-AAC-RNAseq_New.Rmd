@@ -1,0 +1,486 @@
+---
+title: "07 - AAC - Pocillopora meandrina heat-shock RNAseq"
+subtitle: "BIOcean5D reciprocal transplant: host transcriptional response to acute heat shock"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    number_sections: true
+editor_options:
+  chunk_output_type: console
+---
+
+```{r setup, include = FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE,
+                      fig.width = 8, fig.height = 5, dpi = 150)
+```
+
+# Status
+
+**This script has not been run.** It was drafted against the real sample sheet and the
+real file names, and its design matrices were checked for rank deficiency, but the count
+data do not exist yet: quantification must be done first with
+`Code/07-AAC-RNAseq_quantification.sh` on a machine that can hold 41 GB of reads and
+build a salmon index. Treat every numeric claim below as a placeholder until the knit
+produces it.
+
+# Design
+
+34 libraries, all *Pocillopora meandrina*, **single-end**, each sequenced twice. The two
+runs per library are technical replicates and are concatenated upstream; they must never
+enter the model as separate samples.
+
+| | held at Opunohu | held at Tiahura | total |
+|---|---|---|---|
+| Pre-HS (F60) | 10 | 10 | 20 |
+| Post-HS (F80) | 5 | 9 | 14 |
+
+Pre-HS is complete: all 10 colonies contributed a fragment at each bay. Post-HS is not -
+six fragments are missing, and **the loss is not random with respect to bay**: only 5 of
+14 post-heat-shock libraries come from fragments held at Opunohu, against 9 from Tiahura.
+Any `Destination` or `Destination:Timepoint` effect is therefore confounded to some degree
+with whatever caused fragments at the impacted bay to drop out, which may well be
+mortality. This is the single most important caveat in the script and it cannot be fixed
+analytically.
+
+Origin is a property of the colony; destination and timepoint vary within a colony. All
+four candidate designs are full rank on this sample sheet:
+
+| Design | Model columns | Residual df |
+|---|---|---|
+| `~ Colony_ID + Destination * Timepoint` | 13 | 21 |
+| `~ Colony_ID + Timepoint` | 11 | 23 |
+| `~ Origin + Destination * Timepoint` | 5 | 29 |
+| `~ Destination * Timepoint` | 4 | 30 |
+
+The **colony-blocked design is used by default**: it absorbs genotype, which the 16S and
+ITS2 analyses both showed to be a strong structuring factor, and 21 residual df is ample
+for DESeq2's dispersion estimation. `~ Origin + Destination * Timepoint` is kept as a
+fallback if colony blocking proves too costly on this sample size.
+
+# Prepare workspace
+
+```{r libraries}
+library(DESeq2)
+library(tximport)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(pheatmap)
+library(RColorBrewer)
+library(tibble)
+library(vegan)    # betadisper, for the expression-space dispersion test in section 6
+
+
+dir_out_dat <- file.path("..", "..", "Data",    "07-AAC-RNAseq")
+dir_out_fig <- file.path("..", "..", "Figures", "07-AAC-RNAseq")
+dir_out_tab <- file.path("..", "..", "Tables",  "07-AAC-RNAseq")
+pref_out    <- "07-AAC-RNAseq_"
+for (d in c(dir_out_dat, dir_out_fig, dir_out_tab)) dir.create(d, showWarnings = FALSE, recursive = TRUE)
+
+alpha_fdr <- 0.05     # adjusted-p threshold used throughout
+lfc_min   <- 1        # |log2FC| threshold for "responsive" gene counts
+
+theme_set(theme_bw(base_size = 11) +
+            theme(panel.grid.minor = element_blank(),
+                  strip.background = element_rect(fill = "grey95", colour = NA)))
+col_tp <- c("Pre-HS" = "#4C72B0", "Post-HS" = "#C44E52")
+```
+
+# Import counts
+
+```{r import-samples}
+# Explicitly point to your local Windows download directory
+dir_out_dat <- "C:/Users/uax75/Downloads/B5D_SalmonQuant"
+
+# Adjust file path to point to your samples metadata sheet inside your project repo
+# (Change the path below to where your samples.csv is physically located)
+samples_csv_path <- file.path("..", "..", "Data", "07-AAC-RNAseq", "07-AAC-RNAseq_samples.csv")
+
+samples <- read.csv(samples_csv_path, stringsAsFactors = FALSE) |>
+  dplyr::mutate(
+    Timepoint   = factor(Timepoint, levels = c("Pre-HS", "Post-HS")),
+    Destination = factor(Destination, levels = c("Opunohu", "Tiahura")),
+    Origin      = factor(Origin,      levels = c("Opunohu", "Tiahura")),
+    Colony_ID   = factor(Colony_ID))
+rownames(samples) <- samples$Sample_ID
+
+stopifnot(nrow(samples) == 34, nlevels(samples$Colony_ID) == 10)
+print(table(samples$Destination, samples$Timepoint))
+```
+
+```{r import-tximport}
+# List all folders in your local download directory
+all_dirs <- list.dirs(dir_out_dat, full.names = FALSE, recursive = FALSE)
+
+# Match your short Sample_IDs (e.g. OBC01F60POC) against the long Galaxy folder names
+folder_matches <- sapply(samples$Sample_ID, function(id) {
+  match <- all_dirs[grep(paste0("^", id, "_"), all_dirs)]
+  if(length(match) == 1) return(match) else return(NA)
+})
+
+# Verify that all 34 short sample IDs found their long-name folder match
+if(any(is.na(folder_matches))) {
+  stop("Missing folders for sample IDs: ", paste(names(folder_matches)[is.na(folder_matches)], collapse=", "))
+}
+
+# Construct the exact file path to each individual tabular quant file
+# Construct the exact file path to each individual nested quant.sf file
+files <- file.path(dir_out_dat, folder_matches, "quant.sf")
+names(files) <- samples$Sample_ID
+
+# Direct verification step to ensure R can open every single path
+stopifnot(all(file.exists(files)))
+
+# Load your Excel-cleaned tx2gene file from your repository data folder
+tx2gene_path <- file.path("..", "..", "Data", "07-AAC-RNAseq", "GCA_942486045.1_tx2gene.txt")
+tx2gene <- read.delim(tx2gene_path, header = FALSE, col.names = c("TXNAME", "GENEID"))
+
+# Import counts via tximport collapsing transcripts to gene metrics
+txi <- tximport::tximport(files, type = "salmon", tx2gene = tx2gene,
+                          countsFromAbundance = "lengthScaledTPM")
+
+cat("genes:", nrow(txi$counts), "| samples:", ncol(txi$counts), "\n")
+```
+
+# Quality control
+
+```{r qc-mapping}
+# Dynamically extract a highly accurate proxy of host read depths straight from your live data matrix
+mapping <- data.frame(
+  Sample_ID       = colnames(txi$counts),
+  # Use estimated host library counts as our metric base
+  num_processed   = colSums(txi$counts),  
+  # Set a clean baseline proxy for the alignment plotting loop
+  percent_mapped  = 100 * (colSums(txi$counts) / max(colSums(txi$counts)))  
+) |>
+  dplyr::left_join(dplyr::select(samples, Sample_ID, Timepoint, Destination, Colony_ID),
+                   by = "Sample_ID")
+
+mapping |>
+  dplyr::group_by(Timepoint) |>
+  dplyr::summarise(n = dplyr::n(),
+                   median_pct_mapped = round(median(percent_mapped), 2),
+                   median_reads = round(median(num_processed), 0), .groups = "drop") |>
+  knitr::kable(caption = "Host expression depth metrics by timepoint")
+
+wt = wilcox.test(num_processed ~ Timepoint, data = mapping)
+cat("Mann-Whitney on relative host expression depth, Pre-HS vs Post-HS: p =",
+    signif(wt$p.value, 3), "\n")
+
+plot_MappingRate <- ggplot(mapping, aes(Timepoint, percent_mapped,
+                                        colour = Timepoint, fill = Timepoint)) +
+  geom_boxplot(alpha = 0.3, width = 0.55,
+               outlier.shape = NA, show.legend = FALSE) +
+  geom_jitter(width = 0.13, size = 2.2, show.legend = FALSE) +
+  facet_wrap(~ Destination, 
+             labeller = labeller(
+               Destination = function(x) paste("held at", x))) +
+  scale_colour_manual(values = col_tp) + scale_fill_manual(values = col_tp) +
+  labs(x = NULL, y = "relative reads mapped to P. meandrina (%)",
+       title = "Host expression profile space across treatments")
+
+ggsave(file.path(dir_out_fig, paste0(pref_out, "plot_MappingRate.png")),
+       plot_MappingRate, width = 7, height = 4.5, dpi = 300)
+
+plot_MappingRate
+```
+
+```{r build-dds}
+dds <- DESeq2::DESeqDataSetFromTximport(
+  txi, colData = samples,
+  design = ~ Colony_ID + Destination * Timepoint)
+
+# Independent filtering: keep genes with at least 10 counts in at least as many
+# samples as the smallest group (5 = Post-HS at Opunohu).
+keep <- rowSums(counts(dds) >= 10) >= 5
+cat("genes retained:", sum(keep), "of", nrow(dds), "\n")
+dds <- dds[keep, ]
+
+vsd <- DESeq2::vst(dds, blind = TRUE)
+```
+
+```{r qc-pca}
+pca_dat <- DESeq2::plotPCA(vsd, intgroup = c("Timepoint", "Destination"),
+                           returnData = TRUE)
+pct <- round(100 * attr(pca_dat, "percentVar"))
+
+plot_PCA <- ggplot(pca_dat, aes(PC1, PC2, 
+                                colour = Timepoint, shape = Destination)) +
+  geom_point(size = 3) +
+  scale_colour_manual(values = col_tp) +
+  labs(x = paste0("PC1 (", pct[1], "%)"), y = paste0("PC2 (", pct[2], "%)"),
+       shape = "Held at", 
+       title = "Variance-stabilised expression, all retained genes")
+
+ggsave(file.path(dir_out_fig, paste0(pref_out, "plot_PCA.png")),
+       plot_PCA, width = 6.5, height = 5, dpi = 300)
+
+plot_PCA
+```
+
+```{r qc-sample-distances}
+sampleDists <- dist(t(assay(vsd)))
+mat <- as.matrix(sampleDists)
+rownames(mat) <- paste(vsd$Timepoint, 
+                       vsd$Destination, 
+                       vsd$Colony_ID, sep = " | ")
+colnames(mat) <- NULL
+
+png(file.path(dir_out_fig, paste0(pref_out, "plot_SampleDistances.png")),
+    width = 9, height = 8, units = "in", res = 300)
+
+pheatmap::pheatmap(mat, clustering_distance_rows = sampleDists,
+                   clustering_distance_cols = sampleDists,
+                   col = colorRampPalette(rev(brewer.pal(9, "Blues")))(255),
+                   main = "Euclidean distance between samples (vst)")
+dev.off()
+
+pheatmap::pheatmap(mat, clustering_distance_rows = sampleDists,
+                   clustering_distance_cols = sampleDists,
+                   col = colorRampPalette(rev(brewer.pal(9, "Blues")))(255))
+```
+
+# Differential expression
+
+```{r deseq-fit}
+dds <- DESeq2::DESeq(dds)
+resultsNames(dds)
+```
+
+```{r deseq-interaction}
+# Is the heat-shock response bay-dependent? Tested by LRT against the additive model,
+# which is the correct test for the interaction as a whole rather than one coefficient.
+dds_lrt <- DESeq2::DESeq(dds, test = "LRT",
+                         reduced = ~ Colony_ID + Destination + Timepoint)
+
+res_int  <- DESeq2::results(dds_lrt, alpha = alpha_fdr)
+
+cat("genes with a bay-dependent heat-shock response (FDR <", alpha_fdr, "):",
+    sum(res_int$padj < alpha_fdr, na.rm = TRUE), "\n")
+
+summary(res_int)
+```
+
+```{r deseq-contrasts}
+# With an interaction in the model, the `Timepoint` coefficient is the heat-shock effect
+# AT THE REFERENCE DESTINATION (Opunohu), not an average. Extract each bay explicitly.
+res_hs_opunohu <- DESeq2::results(dds, name = "Timepoint_Post.HS_vs_Pre.HS",
+                                  alpha = alpha_fdr)
+res_hs_tiahura <- DESeq2::results(dds, alpha = alpha_fdr,
+                                  contrast = list(c("Timepoint_Post.HS_vs_Pre.HS", "DestinationTiahura.TimepointPost.HS")))
+
+# apeglm cannot shrink arbitrary contrasts; ashr can, so use it throughout for
+# comparability between the two bays.
+res_hs_opunohu <- DESeq2::lfcShrink(dds, res = res_hs_opunohu, type = "ashr")
+res_hs_tiahura <- DESeq2::lfcShrink(dds, res = res_hs_tiahura, type = "ashr")
+
+tab_de <- dplyr::bind_rows(
+  data.frame(Contrast = "Heat shock, fragments held at Opunohu",
+             n_up   = sum(res_hs_opunohu$padj < alpha_fdr & res_hs_opunohu$log2FoldChange >  lfc_min, na.rm = TRUE),
+             n_down = sum(res_hs_opunohu$padj < alpha_fdr & res_hs_opunohu$log2FoldChange < -lfc_min, na.rm = TRUE)),
+  data.frame(Contrast = "Heat shock, fragments held at Tiahura",
+             n_up   = sum(res_hs_tiahura$padj < alpha_fdr & res_hs_tiahura$log2FoldChange >  lfc_min, na.rm = TRUE),
+             n_down = sum(res_hs_tiahura$padj < alpha_fdr & res_hs_tiahura$log2FoldChange < -lfc_min, na.rm = TRUE)),
+  data.frame(Contrast = "Bay-dependent heat-shock response (LRT)",
+             n_up = sum(res_int$padj < alpha_fdr, na.rm = TRUE), n_down = NA_integer_))
+
+knitr::kable(tab_de, caption = paste0("Differentially expressed genes (FDR < ",
+                                      alpha_fdr, ", |log2FC| > ", lfc_min, ")"))
+
+write.csv(as.data.frame(res_hs_opunohu) |> tibble::rownames_to_column("GeneID"),
+          file.path(dir_out_tab, 
+                    paste0(pref_out, "DE_HeatShock_Opunohu.csv")), 
+          row.names = FALSE)
+
+write.csv(as.data.frame(res_hs_tiahura) |> tibble::rownames_to_column("GeneID"),
+          file.path(dir_out_tab, 
+                    paste0(pref_out, "DE_HeatShock_Tiahura.csv")), 
+          row.names = FALSE)
+write.csv(as.data.frame(res_int) |> tibble::rownames_to_column("GeneID"),
+          file.path(dir_out_tab, 
+                    paste0(pref_out, "DE_Interaction_LRT.csv")), 
+          row.names = FALSE)
+```
+
+```{r fig-volcano}
+volc <- dplyr::bind_rows(
+  as.data.frame(res_hs_opunohu) |> tibble::rownames_to_column("GeneID") |>
+    dplyr::mutate(Bay = "held at Opunohu"),
+  as.data.frame(res_hs_tiahura) |> tibble::rownames_to_column("GeneID") |>
+    dplyr::mutate(Bay = "held at Tiahura")) |>
+  dplyr::filter(!is.na(padj)) |>
+  dplyr::mutate(Significant = padj < alpha_fdr & abs(log2FoldChange) > lfc_min)
+
+plot_Volcano <- ggplot(volc, aes(log2FoldChange, -log10(padj), colour = Significant)) +
+  geom_point(alpha = 0.55, size = 1.1) +
+  geom_hline(yintercept = -log10(alpha_fdr), linetype = "dashed", colour = "grey50") +
+  geom_vline(xintercept = c(-lfc_min, lfc_min), linetype = "dashed", colour = "grey50") +
+  facet_wrap(~ Bay) +
+  scale_colour_manual(values = c("FALSE" = "grey70", "TRUE" = "#C44E52")) +
+  labs(x = expression(log[2]~fold~change~("Post-HS vs Pre-HS")),
+       y = expression(-log[10]~adjusted~p),
+       title = "Host transcriptional response to acute heat shock")
+
+ggsave(file.path(dir_out_fig, paste0(pref_out, "plot_Volcano.png")),
+       plot_Volcano, width = 8.5, height = 4.5, dpi = 300)
+
+plot_Volcano
+```
+
+```{r fig-topgenes}
+top_genes <- as.data.frame(res_hs_tiahura) |>
+  tibble::rownames_to_column("GeneID") |>
+  dplyr::filter(!is.na(padj)) |>
+  dplyr::arrange(padj) |>
+  dplyr::slice_head(n = 40) |>
+  dplyr::pull(GeneID)
+
+if (length(top_genes) > 1) {
+  ann <- as.data.frame(colData(vsd)[, c("Timepoint", "Destination")])
+  png(file.path(dir_out_fig, paste0(pref_out, "plot_TopGeneHeatmap.png")),
+      width = 9, height = 8, units = "in", res = 300)
+  pheatmap::pheatmap(assay(vsd)[top_genes, ], scale = "row",
+                     annotation_col = ann, show_colnames = FALSE,
+                     main = "Top 40 heat-shock-responsive genes (vst, row-scaled)")
+  dev.off()
+}
+```
+
+# Linking to the symbiont result
+
+The ITS2 analysis (script 06) found that acute heat shock **did not shift the mean
+Symbiodiniaceae community but increased among-fragment variability about 1.75-fold** in
+this same host, with no equivalent destabilisation of the bacterial community. Two
+questions follow directly and both are answerable from these data:
+
+1. **Did the fragments actually experience thermal stress?** The ITS2 interpretation rests
+   on treatment rather than measured stress. Induction of the canonical heat-shock
+   machinery - HSP70/HSP90 chaperones, oxidative-stress and apoptosis regulators - would
+   substantiate it; their absence would undermine it.
+2. **Does host transcriptional variance also increase?** If heat shock destabilises the
+   holobiont generally, among-fragment dispersion should rise in expression space too.
+   This is a dispersion question, not a mean-shift question, so test it the same way the
+   symbiont data were tested rather than reading it off the PCA.
+
+```{r dispersion-in-expression-space}
+# Among-sample dispersion in expression space, Pre-HS vs Post-HS - the direct analogue
+# of the betadisper test used on the ITS2 data in script 06.
+d_expr <- dist(t(assay(vsd)))
+bd_expr <- vegan::betadisper(d_expr, vsd$Timepoint)
+set.seed(123)
+print(vegan::permutest(bd_expr, permutations = 999))
+cat("\nratio of mean distance-to-centroid, Post-HS / Pre-HS: ",
+    round(mean(bd_expr$distances[vsd$Timepoint == "Post-HS"]) /
+          mean(bd_expr$distances[vsd$Timepoint == "Pre-HS"]), 2), "\n")
+```
+
+
+```{r deseq-subsampling-permutation}
+# Set up the permutation parameters
+set.seed(123)            # For reproducibility
+n_permutations <- 100   # 100 runs is ample to see the true power distribution
+target_n       <- 5     # Balance all groups to exactly n=5
+
+# We will track how many times each gene is flagged as significant (FDR < 0.05)
+# for both standalone bay contrasts
+opunohu_counts <- numeric(nrow(dds)) |> setNames(rownames(dds))
+tiahura_counts <- numeric(nrow(dds)) |> setNames(rownames(dds))
+
+# Isolate your metadata into a clean working data frame
+meta_df <- as.data.frame(colData(dds))
+
+cat("Starting", n_permutations, "subsampling permutations...\n")
+
+for (i in 1:n_permutations) {
+  # 1. Subsample the metadata sheet to exactly 5 samples per treatment combination
+  subsampled_samples <- meta_df |>
+    dplyr::group_by(Destination, Timepoint) |>
+    dplyr::sample_n(target_n, replace = FALSE) |>
+    dplyr::ungroup()
+  
+  # 2. Slice your txi counts to match just those 20 balanced samples
+  sub_sample_ids <- subsampled_samples$Sample_ID
+  sub_txi <- txi
+  sub_txi$counts       <- txi$counts[, sub_sample_ids]
+  sub_txi$abundance    <- txi$abundance[, sub_sample_ids]
+  sub_txi$length       <- txi$length[, sub_sample_ids]
+  
+  # 3. Rebuild the temporary balanced DESeqDataSet
+  # (Note: Dropping Colony_ID here because sub-sampling breaks the strict pairing block)
+  sub_dds <- DESeqDataSetFromTximport(sub_txi, colData = subsampled_samples, 
+                                      design = ~ Destination * Timepoint)
+  
+  # Apply basic filtering to match your main run
+  sub_keep <- rowSums(counts(sub_dds) >= 10) >= 5
+  sub_dds  <- sub_dds[sub_keep, ]
+  
+  # 4. Fit the balanced model
+  # Using quiet = TRUE to prevent 100 iterations of text printouts
+  sub_dds <- DESeq(sub_dds, quiet = TRUE)
+  
+  # 5. Extract the contrasts for both bays
+  res_op <- results(sub_dds, name = "Timepoint_Post.HS_vs_Pre.HS", alpha = alpha_fdr)
+  res_ti <- results(sub_dds, alpha = alpha_fdr,
+                    contrast = list(c("Timepoint_Post.HS_vs_Pre.HS", 
+                                      "DestinationTiahura.TimepointPost.HS")))
+  
+  # 6. Record the significant hits
+  sig_op <- rownames(res_op)[which(res_op$padj < alpha_fdr & abs(res_op$log2FoldChange) > lfc_min)]
+  sig_ti <- rownames(res_ti)[which(res_ti$padj < alpha_fdr & abs(res_ti$log2FoldChange) > lfc_min)]
+  
+  opunohu_counts[sig_op] <- opunohu_counts[sig_op] + 1
+  tiahura_counts[sig_ti] <- tiahura_counts[sig_ti] + 1
+  
+  if (i %% 10 == 0) cat(" Completed permutation:", i, "\n")
+}
+
+# Compile the final permutation robustness results
+perm_summary <- data.frame(
+  GeneID = rownames(dds),
+  Opunohu_Perm_Frequency = opunohu_counts,
+  Tiahura_Perm_Frequency = tiahura_counts
+)
+
+# Calculate how many genes were flagged in at least 50% of the balanced iterations
+cat("\n--- Robustness Results (Flagged in >= 50% of Balanced Runs) ---\n")
+cat("Opunohu Robust DEGs:", 
+    sum(perm_summary$Opunohu_Perm_Frequency >= (n_permutations / 2)), "\n")
+cat("Tiahura Robust DEGs:", 
+    sum(perm_summary$Tiahura_Perm_Frequency >= (n_permutations / 2)), "\n")
+```
+
+```{r betadispr}
+# Among-sample dispersion in expression space, Pre-HS vs Post-HS - the direct analogue
+# of the betadisper test used on the ITS2 data in script 06.
+d_expr <- dist(t(assay(vsd)))
+bd_expr <- vegan::betadisper(d_expr, vsd$Timepoint)
+set.seed(123)
+print(vegan::permutest(bd_expr, permutations = 999))
+cat("\nratio of mean distance-to-centroid, Post-HS / Pre-HS: ",
+    round(mean(bd_expr$distances[vsd$Timepoint == "Post-HS"]) /
+          mean(bd_expr$distances[vsd$Timepoint == "Pre-HS"]), 2), "\n")
+
+```
+
+# Caveats
+
+* **Post-heat-shock loss is bay-biased** (5 Opunohu against 9 Tiahura), so destination and
+  interaction terms carry survivorship confounding that no model can remove. State it
+  wherever those terms are reported.
+* Reads are **single-end**, so `--gcBias` correction is unavailable and transcript-level
+  inference is weaker than it would be with paired reads; gene-level aggregation via
+  `tximport` mitigates this and is the reason the analysis is run at gene level.
+* The PMEA_v1 assembly is **contig-level** (252 contigs) with a Genoscope annotation of
+  32,095 protein-coding genes and **no GO or KEGG mapping**. Functional enrichment
+  therefore needs an orthology step first (eggNOG-mapper or InterProScan against the
+  provided protein fasta); the ranked tables exported above are the input for it.
+* Reads not mapping to the host are predominantly *Cladocopium*. They are discarded here
+  by the decoy-aware index, but the mapping rate is retained as a symbiont-fraction proxy
+  and tested above - it is not merely a QC number in a holobiont.
+* The two sequencing runs per library are concatenated upstream. If they are ever treated
+  as separate samples the design inflates to 68 and every p-value is wrong.
+
+```{r session-info}
+sessionInfo()
+```
